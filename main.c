@@ -64,15 +64,25 @@ static void fullscreen_button_cb (GtkButton *button, CustomData *data) {
     toggle_fullscreen(data);
 }
 
+// 辅助宏：用于简化录制元素指针的清空操作
+#define CLEAR_GST_ELEMENT_PTR(ptr) \
+    do { \
+        if (ptr) { \
+            ptr = NULL; \
+        } \
+    } while(0)
+
 /* 辅助函数：负责清理 GStreamer 录制分支（在非 GUI 线程或空闲时调用） */
 static gboolean cleanup_recording_branch(gpointer user_data) {
     CustomData *data = (CustomData *)user_data;
     if (!data->is_recording || !data->pipeline) {
         return G_SOURCE_REMOVE;
     }
+
 #ifdef DEBUG
     g_print("Cleaning up recording branch...\n");
 #endif
+
     // 1. 将录制分支的所有元素状态设为 NULL，并从管道中移除
     GstElement *record_elements[] = {
         video_record_queue, video_encoder, h264_parser, 
@@ -85,18 +95,17 @@ static gboolean cleanup_recording_branch(gpointer user_data) {
             // 必须先设置为 NULL 状态才能安全移除
             gst_element_set_state(record_elements[i], GST_STATE_NULL);
             gst_bin_remove(GST_BIN(data->pipeline), record_elements[i]);
-            // gst_bin_remove handles unref due to parent change, no extra unref needed here
         }
     }
 
     // 2. 清理全局指针和标志
-    muxer = NULL;
-    filesink = NULL;
-    video_record_queue = NULL;
-    video_encoder = NULL;
-    h264_parser = NULL;
-    audio_record_queue = NULL;
-    audio_encoder = NULL;
+    CLEAR_GST_ELEMENT_PTR(muxer);
+    CLEAR_GST_ELEMENT_PTR(filesink);
+    CLEAR_GST_ELEMENT_PTR(video_record_queue);
+    CLEAR_GST_ELEMENT_PTR(video_encoder);
+    CLEAR_GST_ELEMENT_PTR(h264_parser);
+    CLEAR_GST_ELEMENT_PTR(audio_record_queue);
+    CLEAR_GST_ELEMENT_PTR(audio_encoder);
 
     if (recording_filename) {
         g_free(recording_filename);
@@ -104,6 +113,7 @@ static gboolean cleanup_recording_branch(gpointer user_data) {
     }
 
     data->is_recording = FALSE;
+
 #ifdef DEBUG
     g_print("Recording cleanup complete.\n");
 #endif
@@ -128,7 +138,6 @@ static gboolean stop_recording(CustomData *data) {
     }
 
     // 1. 取消动态链接并释放 Pad
-    // 取消链接本身是线程安全的，但状态改变必须小心
     if (video_tee_q_pad) {
         GstPad *v_queue_sink_pad = gst_element_get_static_pad(video_record_queue, "sink");
         if (v_queue_sink_pad) {
@@ -359,14 +368,12 @@ static void create_ui (CustomData *data) {
   /* 创建全屏按钮，使用一个图标 */
   fullscreen_button = gtk_button_new_from_icon_name("view-fullscreen-symbolic", GTK_ICON_SIZE_SMALL_TOOLBAR);
   g_signal_connect (G_OBJECT (fullscreen_button), "clicked", G_CALLBACK (fullscreen_button_cb), data);
-
   /* 将按钮打包到 header bar 的末尾（右侧） */
   gtk_header_bar_pack_end(GTK_HEADER_BAR(header_bar), fullscreen_button);
 
   /* 创建录制按钮，使用一个图标 */
   record_button = gtk_button_new_from_icon_name("media-record-symbolic", GTK_ICON_SIZE_SMALL_TOOLBAR);
   g_signal_connect (G_OBJECT (record_button), "clicked", G_CALLBACK (record_button_cb), data);
-
   /* 将新按钮打包到 header bar 的末尾 */
   gtk_header_bar_pack_end(GTK_HEADER_BAR(header_bar), record_button);
 
@@ -403,7 +410,9 @@ static void error_cb (GstBus *bus, GstMessage *msg, CustomData *data) {
 
 /* 流结束回调 */
 static void eos_cb (GstBus *bus, GstMessage *msg, CustomData *data) {
-  //g_print ("End-Of-Stream reached. Quitting application safely.\n");
+#ifdef DEBUG
+  g_print ("End-Of-Stream reached. Quitting application safely.\n");
+#endif
   // 收到 EOS 消息后，设置管道状态为 NULL 释放资源，然后退出 GTK 主循环
   if (data->pipeline) {
       stop_recording(data);
@@ -418,8 +427,6 @@ int main(int argc, char *argv[]) {
   CustomData data = {0};
   GstStateChangeReturn ret;
   GstBus *bus;
-
-  //g_setenv("GST_DEBUG", "WARN", TRUE); 
 
   /* 初始化GTK */
   gtk_init (&argc, &argv);
@@ -441,7 +448,7 @@ int main(int argc, char *argv[]) {
           gst_element_set_state(data.pipeline, GST_STATE_NULL);
           gst_object_unref(data.pipeline);
       }
-      iniparser_freedict(data.config_dict); // 使用 iniparser_freedict 释放资源
+      iniparser_freedict(data.config_dict);
       return -1;
   }
 
@@ -463,6 +470,7 @@ int main(int argc, char *argv[]) {
     // 启动失败时，直接释放资源并退出
     gst_element_set_state (data.pipeline, GST_STATE_NULL);
     gst_object_unref (data.pipeline);
+    iniparser_freedict(data.config_dict);
     return -1;
   }
 
@@ -474,7 +482,7 @@ int main(int argc, char *argv[]) {
       data.config_dict = NULL;
   }
 
-  // 确保 GStreamer 管道被释放 (即使在 eos_cb 中被释放，这里做个双保险)
+  // 确保 GStreamer 管道被释放
   if (data.pipeline) {
       stop_recording(&data);
       gst_element_set_state(data.pipeline, GST_STATE_NULL);
