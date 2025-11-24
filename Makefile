@@ -1,6 +1,6 @@
 CC = clang
 TARGET = ns
-SRCS = main.c config.c
+SRCS = main.c config.c recorder.c
 PKG_LIBS = $(shell pkg-config --libs gtk+-3.0 gstreamer-1.0) -liniparser
 PKG_CFLAGS = $(shell pkg-config --cflags gtk+-3.0 gstreamer-1.0) -I/usr/include/iniparser
 CFLAGS = $(PKG_CFLAGS)
