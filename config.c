@@ -5,7 +5,7 @@
 #include <dictionary.h>
 
 // 辅助函数：动态创建元素并添加到bin
-static GstElement* create_and_add_element(const char *factory_name, const char *element_name, GstBin *bin) {
+GstElement* create_and_add_element(const char *factory_name, const char *element_name, GstBin *bin) {
     GstElement *element = gst_element_factory_make(factory_name, element_name);
     if (!element) {
         g_printerr("Failed to create element of type %s with name %s.\n", factory_name, element_name);
@@ -19,7 +19,7 @@ static GstElement* create_and_add_element(const char *factory_name, const char *
 }
 
 // 辅助函数：手动将字符串值转换为 GStreamer 属性类型并设置
-static void set_element_property(GstElement *element, const char *key_name, const char *value_str) {
+void set_element_property(GstElement *element, const char *key_name, const char *value_str) {
     GParamSpec *pspec;
     pspec = g_object_class_find_property(G_OBJECT_GET_CLASS(element), key_name);
 
@@ -68,6 +68,10 @@ static void set_element_property(GstElement *element, const char *key_name, cons
         gdouble double_val = g_strtod(value_str, NULL);
         g_object_set(G_OBJECT(element), key_name, double_val, NULL);
         success = TRUE;
+    } else if (g_strcmp0(type_name, "GstVideoFormat") == 0) {
+        gint int_val = (gint)strtol(value_str, NULL, 10);
+        g_object_set(G_OBJECT(element), key_name, int_val, NULL);
+        success = TRUE;
     }
     // 注意：枚举类型 (GstEnum) 和标志类型 (GstFlags) 需要更复杂的处理，这里暂不支持。
 
@@ -82,7 +86,7 @@ static void set_element_property(GstElement *element, const char *key_name, cons
 }
 
 // 辅助函数：根据INI配置设置元素属性
-static void configure_element_from_ini(GstElement *element, dictionary *dict, const char *section_name) {
+void configure_element_from_ini(GstElement *element, dictionary *dict, const char *section_name) {
     if (!element || !dict || !section_name) return;
 
     // iniparser section names don't include brackets []
@@ -158,6 +162,25 @@ gboolean initialize_gstreamer_pipeline(CustomData *data) {
             const char *factory_name = ini_section_name;
             const char *config_section_to_use = ini_section_name;
 
+            // Video Tee
+            if (strcmp(ini_section_name, "video_tee") == 0) {
+                // 在这里插入 Tee 元素
+                data->video_tee = create_and_add_element("tee", "video-tee", bin);
+                if (!data->video_tee) { success = FALSE; break; }
+                
+                // 将前一个元素链接到 Tee
+                if (prev_element && !gst_element_link(prev_element, data->video_tee)) {
+                    g_printerr("Failed to link %s to video-tee.\n", GST_OBJECT_NAME(prev_element));
+                    success = FALSE; break;
+                } else {
+#ifdef DEBUG
+                    g_print("Linked %s to video-tee successfully.\n", GST_OBJECT_NAME(prev_element));
+#endif
+                }
+                prev_element = data->video_tee; // Tee 成为下一个元素的 prev_element
+                continue; // 跳过此迭代的剩余部分
+            }
+
             if (strncmp(ini_section_name, "capsfilter", strlen("capsfilter")) == 0) {
                 // 如果是 capsfilter 或 capsfilter1, factory name 统一用 capsfilter
                 factory_name = "capsfilter";
@@ -221,11 +244,11 @@ gboolean initialize_gstreamer_pipeline(CustomData *data) {
             g_object_get (gtkglsink, "widget", &data->sink_widget, NULL);
 
             if (!gst_element_link(last_video_element, data->videosink)) {
-                g_printerr ("Failed to link last video element to glsinkbin.\n");
+                g_printerr ("Failed to link %s to %s.\n", GST_OBJECT_NAME(last_video_element), GST_OBJECT_NAME(data->videosink));
                 success = FALSE;
             } else {
 #ifdef DEBUG
-                g_print("Linked gtkglsink to glsinkbin successfully.\n");
+                g_print("Linked %s to %s successfully.\n", GST_OBJECT_NAME(last_video_element), GST_OBJECT_NAME(data->videosink));
 #endif
             }
         }
@@ -239,10 +262,16 @@ gboolean initialize_gstreamer_pipeline(CustomData *data) {
     if (success && audio_pipeline_str) {
         gchar **elements_list = g_strsplit(audio_pipeline_str, ",", -1);
         GstElement *prev_element = NULL;
+        char *last_audio_factory_name = NULL; 
 
         for (int i = 0; elements_list[i] != NULL; ++i) {
             char *factory_name = g_strstrip(elements_list[i]);
             if (strlen(factory_name) == 0) continue;
+
+            if (elements_list[i+1] == NULL) {
+                last_audio_factory_name = g_strdup(factory_name);
+                break; // 退出循环，稍后手动创建sink
+            }
 
             GstElement *current_element = NULL;
             char element_gst_name[128];
@@ -250,8 +279,8 @@ gboolean initialize_gstreamer_pipeline(CustomData *data) {
 
 
             if (strcmp(factory_name, "queue") == 0) config_section_to_use = "queue"; // 音频和视频队列共用 [queue] section
-
             snprintf(element_gst_name, sizeof(element_gst_name), "%s-%d", factory_name, i);
+
             current_element = create_and_add_element(factory_name, element_gst_name, bin);
             if (!current_element) {
                 success = FALSE;
@@ -275,10 +304,56 @@ gboolean initialize_gstreamer_pipeline(CustomData *data) {
             prev_element = current_element;
         }
 
+        // 循环结束后，prev_element 指向 pulsesink 之前的最后一个元素（可能是 queue）
+        if (success && prev_element && last_audio_factory_name) {
+            last_audio_element = prev_element;
+
+            // --- 新增逻辑：创建 Audio Tee ---
+            data->audio_tee = create_and_add_element("tee", "audio-tee", bin);
+            if (!data->audio_tee) {
+                success = FALSE;
+            } else {
+                // 将最后一个处理元素链接到 Tee
+                if (!gst_element_link(last_audio_element, data->audio_tee)) {
+                    g_printerr("Failed to link last audio element to audio-tee.\n");
+                    success = FALSE;
+                } else {
+#ifdef DEBUG
+                    g_print("Linked %s to %s successfully.\n", GST_OBJECT_NAME(last_audio_element), GST_OBJECT_NAME(data->audio_tee));
+#endif
+                }
+
+                // --- 新增逻辑：创建 pulsesink 并链接到 Tee 的一个端口 (用于实时播放) ---
+                GstElement *audio_sink = create_and_add_element(
+                    last_audio_factory_name, 
+                    "audio-sink",
+                    bin
+                );
+
+                if (!audio_sink) success = FALSE;
+                configure_element_from_ini(audio_sink, dict, last_audio_factory_name);
+
+                if (success && !gst_element_link(data->audio_tee, audio_sink)) {
+                     g_printerr("Failed to link audio-tee to audio-sink.\n");
+                     success = FALSE;
+                } else {
+#ifdef DEBUG
+                    g_print("Linked %s to %s successfully.\n", GST_OBJECT_NAME(data->audio_tee), GST_OBJECT_NAME(audio_sink));
+#endif
+                }
+            }
+        } else if (success && !last_audio_factory_name) {
+            g_printerr("Error: Could not determine last audio sink element name from INI config.\n");
+            success = FALSE;
+        }
+
         if (success) {
             last_audio_element = prev_element;
         }
         g_strfreev(elements_list);
+        if (last_audio_factory_name) {
+            g_free(last_audio_factory_name);
+        }
     }
 
     if (!success) {
