@@ -186,6 +186,9 @@ gboolean initialize_gstreamer_pipeline(CustomData *data) {
             if (strncmp(ini_section_name, "capsfilter", strlen("capsfilter")) == 0) {
                 // 如果是 capsfilter 或 capsfilter1, factory name 统一用 capsfilter
                 factory_name = "capsfilter";
+            } else if (strncmp(ini_section_name, "vaapipostproc", strlen("vaapipostproc")) == 0) {
+                 // 如果是 vaapipostproc 或 vaapipostproc1, factory name 统一用 vaapipostproc
+                 factory_name = "vaapipostproc";
             } else if (strcmp(factory_name, "queue") == 0) {
                 // queue 配置统一读取 [queue] 段，但 GStreamer 元素名称唯一
                 config_section_to_use = "queue";
@@ -267,30 +270,41 @@ gboolean initialize_gstreamer_pipeline(CustomData *data) {
         char *last_audio_factory_name = NULL; 
 
         for (int i = 0; elements_list[i] != NULL; ++i) {
-            char *factory_name = g_strstrip(elements_list[i]);
-            if (strlen(factory_name) == 0) continue;
+            char *ini_section_name = g_strstrip(elements_list[i]);
+            if (strlen(ini_section_name) == 0) continue;
 
             if (elements_list[i+1] == NULL) {
-                last_audio_factory_name = g_strdup(factory_name);
+                last_audio_factory_name = g_strdup(ini_section_name);
                 break; // 退出循环，稍后手动创建sink
             }
 
             GstElement *current_element = NULL;
             char element_gst_name[128];
-            const char *config_section_to_use = factory_name;
+            const char *factory_name = ini_section_name;
+            const char *config_section_to_use = ini_section_name;
 
 
-            if (strcmp(factory_name, "queue") == 0) config_section_to_use = "queue"; // 音频和视频队列共用 [queue] section
-            snprintf(element_gst_name, sizeof(element_gst_name), "%s-%d", factory_name, i);
+            if (strncmp(ini_section_name, "capsfilter", strlen("capsfilter")) == 0) {
+                // 如果是 capsfilter 或 capsfilter1, factory name 统一用 capsfilter
+                factory_name = "capsfilter";
+            } else if (strcmp(factory_name, "queue") == 0) {
+                // 音频和视频队列共用 [queue] section
+                config_section_to_use = "queue";
+            }
 
+            // 确保 GStreamer 内部名称唯一
+            snprintf(element_gst_name, sizeof(element_gst_name), "%s-a%d", factory_name, i);
+
+            // 创建元素
             current_element = create_and_add_element(factory_name, element_gst_name, bin);
-            if (!current_element) {
+
+            if (current_element) {
+                // 使用通用的配置函数，传入需要查找的 INI 段名
+                configure_element_from_ini(current_element, dict, config_section_to_use);
+            } else {
                 success = FALSE;
                 break;
             }
-
-            // 使用工厂名作为 section name e.g., [pulsesrc] or [pulsesink]
-            configure_element_from_ini(current_element, dict, config_section_to_use);
 
             if (prev_element) {
                 if (!gst_element_link(prev_element, current_element)) {

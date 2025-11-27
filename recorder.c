@@ -167,7 +167,7 @@ gboolean start_recording(CustomData *data) {
     video_encoder = create_and_add_element(video_encoder_name, "record-video-encoder", GST_BIN(data->pipeline));
     h264_parser = create_and_add_element("h264parse", "record-h264-parser", GST_BIN(data->pipeline));
 
-    configure_element_from_ini(video_record_queue, dict, "queue");
+    configure_element_from_ini(video_record_queue, dict, "queue_record");
 
     if (!video_record_queue || !video_encoder || !h264_parser) {
         g_printerr("Failed to create video encoder element.\n");
@@ -189,7 +189,7 @@ gboolean start_recording(CustomData *data) {
     audio_encoder = create_and_add_element(audio_encoder_name, "record-audio-encoder", GST_BIN(data->pipeline));
     
     // 使用 INI 配置音频 queue
-    configure_element_from_ini(audio_record_queue, dict, "queue");
+    configure_element_from_ini(audio_record_queue, dict, "queue_record");
 
 
     if (!audio_record_queue || !audio_encoder) {
