@@ -167,7 +167,9 @@ gboolean initialize_gstreamer_pipeline(CustomData *data) {
                 // 在这里插入 Tee 元素
                 data->video_tee = create_and_add_element("tee", "video-tee", bin);
                 if (!data->video_tee) { success = FALSE; break; }
-                
+
+                data->has_tee = TRUE;
+
                 // 将前一个元素链接到 Tee
                 if (prev_element && !gst_element_link(prev_element, data->video_tee)) {
                     g_printerr("Failed to link %s to video-tee.\n", GST_OBJECT_NAME(prev_element));
@@ -190,7 +192,7 @@ gboolean initialize_gstreamer_pipeline(CustomData *data) {
             }
 
             // 确保 GStreamer 内部名称唯一
-            snprintf(element_gst_name, sizeof(element_gst_name), "%s-%d", factory_name, i); 
+            snprintf(element_gst_name, sizeof(element_gst_name), "%s-%d", factory_name, i);
 
             // 创建元素
             current_element = create_and_add_element(factory_name, element_gst_name, bin);
