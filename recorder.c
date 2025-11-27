@@ -1,3 +1,4 @@
+#include "utils.h"
 #include "recorder.h"
 #include <gst/gst.h>
 #include <stdlib.h>

@@ -5,6 +5,7 @@
 #include <time.h>
 #include <stdio.h>
 
+#include "utils.h"
 #include "config.h"
 #include "recorder.h"
 

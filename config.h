@@ -1,13 +1,9 @@
 #ifndef CONFIG_H
 #define CONFIG_H
 
+#include "utils.h"
 #include <gst/gst.h>
 #include <gtk/gtk.h>
-
-#include <iniparser/iniparser.h>
-#include <iniparser/dictionary.h>
-
-#define DEBUG
 
 /* 结构体包含所有需要传递的信息 (与 main.c 中的定义一致) */
 typedef struct _CustomData {
