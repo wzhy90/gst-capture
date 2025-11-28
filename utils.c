@@ -73,6 +73,14 @@ void set_element_property(GstElement *element, const char *key_name, const char 
         gint int_val = (gint)strtol(value_str, NULL, 10);
         g_object_set(G_OBJECT(element), key_name, int_val, NULL);
         success = TRUE;
+    } else if (g_strcmp0(type_name, "GstAacBitrateMode") == 0) {
+        gint int_val = (gint)strtol(value_str, NULL, 10);
+        g_object_set(G_OBJECT(element), key_name, int_val, NULL);
+        success = TRUE;
+    } else if (g_strcmp0(type_name, "GstOpusEncBitrateType") == 0) {
+        gint int_val = (gint)strtol(value_str, NULL, 10);
+        g_object_set(G_OBJECT(element), key_name, int_val, NULL);
+        success = TRUE;
     }
     // 注意：枚举类型 (GstEnum) 和标志类型 (GstFlags) 需要更复杂的处理，这里暂不支持。
 

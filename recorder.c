@@ -13,7 +13,7 @@ static GstElement *muxer = NULL;
 static GstElement *filesink = NULL;
 static GstElement *video_record_queue = NULL;
 static GstElement *video_encoder = NULL;
-static GstElement *h264_parser = NULL;
+static GstElement *video_parser = NULL;
 static GstElement *audio_record_queue = NULL;
 static GstElement *audio_encoder = NULL;
 static gchar *recording_filename = NULL;
@@ -30,7 +30,7 @@ gboolean cleanup_recording_branch(gpointer user_data) {
 #endif
     // 1. 将录制分支的所有元素状态设为 NULL，并从管道中移除
     GstElement *record_elements[] = {
-        video_record_queue, video_encoder, h264_parser, 
+        video_record_queue, video_encoder, video_parser, 
         audio_record_queue, audio_encoder, 
         muxer, filesink, NULL
     };
@@ -48,7 +48,7 @@ gboolean cleanup_recording_branch(gpointer user_data) {
     filesink = NULL;
     video_record_queue = NULL;
     video_encoder = NULL;
-    h264_parser = NULL;
+    video_parser = NULL;
     audio_record_queue = NULL;
     audio_encoder = NULL;
 
@@ -123,7 +123,6 @@ gboolean start_recording(CustomData *data) {
     // --- 1. 获取 INI 配置参数 ---
     const char *record_path = iniparser_getstring(dict, "main:record_path", "/tmp");
     const char *video_encoder_name = iniparser_getstring(dict, "main:encoder", "x264enc");
-    const char *audio_encoder_name = "fdkaacenc";
     
     // --- 2. 创建 Muxer (mp4mux) 和 Filesink ---
     muxer = create_and_add_element("mp4mux", "record-muxer", GST_BIN(data->pipeline));
@@ -134,6 +133,8 @@ gboolean start_recording(CustomData *data) {
         success = FALSE;
         goto cleanup;
     }
+
+    configure_element_from_ini(muxer, dict, "mp4mux");
 
     // 尝试创建目录（包括父目录）
     if (g_mkdir_with_parents(record_path, 0755) == -1 && errno != EEXIST) {
@@ -163,14 +164,28 @@ gboolean start_recording(CustomData *data) {
         goto cleanup;
     }
 
-    // --- 3. 创建并配置视频录制分支元素 (queue -> encoder -> h264parse) ---
+    const char *audio_encoder_name = "fdkaacenc";
+    const char *video_parser_name = NULL;
+    if (strstr(video_encoder_name, "h264") != NULL || strstr(video_encoder_name, "x264") != NULL) {
+        video_parser_name = "h264parse";
+    } else if (strstr(video_encoder_name, "h265") != NULL || strstr(video_encoder_name, "x265") != NULL) {
+        video_parser_name = "h265parse";
+    } else if (strstr(video_encoder_name, "vp9") != NULL) {
+        video_parser_name = "vp9parse";
+        audio_encoder_name = "opusenc";
+    } else {
+        g_printerr("Warning: Unknown encoder %s. Defaulting to h264parse, this might fail.\n", video_encoder_name);
+        video_parser_name = "h264parse";
+    }
+
+    // --- 3. 创建并配置视频录制分支元素 (queue -> encoder -> parse) ---
     video_record_queue = create_and_add_element("queue", "record-video-queue", GST_BIN(data->pipeline));
     video_encoder = create_and_add_element(video_encoder_name, "record-video-encoder", GST_BIN(data->pipeline));
-    h264_parser = create_and_add_element("h264parse", "record-h264-parser", GST_BIN(data->pipeline));
+    video_parser = create_and_add_element(video_parser_name, "record-video-parser", GST_BIN(data->pipeline));
 
     configure_element_from_ini(video_record_queue, dict, "queue_record");
 
-    if (!video_record_queue || !video_encoder || !h264_parser) {
+    if (!video_record_queue || !video_encoder || !video_parser) {
         g_printerr("Failed to create video encoder element.\n");
         success = FALSE;
         goto cleanup;
@@ -179,7 +194,7 @@ gboolean start_recording(CustomData *data) {
     configure_element_from_ini(video_encoder, dict, video_encoder_name);
 
     // 静态链接视频分支内部
-    if (!gst_element_link_many(video_record_queue, video_encoder, h264_parser, muxer, NULL)) {
+    if (!gst_element_link_many(video_record_queue, video_encoder, video_parser, muxer, NULL)) {
         g_printerr("Failed to link video recording elements.\n");
         success = FALSE;
         goto cleanup;
@@ -199,8 +214,7 @@ gboolean start_recording(CustomData *data) {
         goto cleanup;
     }
 
-    // 硬编码设置 bitrate-mode
-    g_object_set(G_OBJECT(audio_encoder), "bitrate-mode", 5, NULL);
+    configure_element_from_ini(audio_encoder, dict, audio_encoder_name);
 
     if (!gst_element_link_many(audio_record_queue, audio_encoder, muxer, NULL)) {
          g_printerr("Failed to link audio recording elements.\n");
@@ -211,7 +225,7 @@ gboolean start_recording(CustomData *data) {
     // --- 5. 将所有新元素状态同步到 PLAYING ---
     GstElement *elements_to_sync[] = {
         muxer, filesink, 
-        video_record_queue, video_encoder, h264_parser, 
+        video_record_queue, video_encoder, video_parser, 
         audio_record_queue, audio_encoder, NULL
     };
 
