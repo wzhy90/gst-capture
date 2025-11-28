@@ -138,7 +138,19 @@ static void create_ui (CustomData *data) {
   gtk_box_pack_start (GTK_BOX (main_box), data->sink_widget, TRUE, TRUE, 0); 
 
   gtk_container_add (GTK_CONTAINER (data->main_window), main_box);
-  gtk_window_set_default_size (GTK_WINDOW (data->main_window), 1280, 720);
+
+  gint width = 1280;
+  gint height = 720;
+  const char *win_size_str = iniparser_getstring(data->config_dict, "main:win_size", NULL);
+
+  if (win_size_str) {
+    if (sscanf(win_size_str, "%dx%d", &width, &height) != 2) {
+      width = 1280;
+      height = 720;
+    }
+  }
+
+  gtk_window_set_default_size (GTK_WINDOW (data->main_window), width, height);
   gtk_window_set_position (GTK_WINDOW (data->main_window), GTK_WIN_POS_CENTER);
 
   gtk_widget_show_all (data->main_window);
