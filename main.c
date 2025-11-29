@@ -152,7 +152,10 @@ static void create_ui (CustomData *data) {
 
   /* 创建 GtkHeaderBar */
   header_bar = gtk_header_bar_new();
-  gtk_header_bar_set_title(GTK_HEADER_BAR(header_bar), "Nintendo Switch");
+  const char* win_title = iniparser_getstring(data->config_dict, "main:win_title", "gst-capture");
+  if (win_title) {
+      gtk_header_bar_set_title(GTK_HEADER_BAR(header_bar), win_title);
+  }
   gtk_header_bar_set_show_close_button(GTK_HEADER_BAR(header_bar), TRUE);
 
   /* 创建全屏按钮，使用一个图标 */
