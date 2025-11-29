@@ -56,6 +56,12 @@ static void fullscreen_button_cb (GtkButton *button, CustomData *data) {
 
 /* 录制按钮点击回调函数 */
 static void record_button_cb (GtkButton *button, CustomData *data) {
+    if (data->is_stopping_recording) {
+#ifdef DEBUG
+        g_print("Recording is currently stopping/cleaning up. Please wait.\n");
+#endif
+        return;
+    }
     if (data->is_recording) {
         stop_recording(data);
         gtk_image_set_from_icon_name(GTK_IMAGE(data->record_icon), "media-record-symbolic", GTK_ICON_SIZE_SMALL_TOOLBAR);
@@ -154,34 +160,69 @@ static void create_ui (CustomData *data) {
   gtk_widget_show_all (data->main_window);
 }
 
-/* 错误处理回调 */
-static void error_cb (GstBus *bus, GstMessage *msg, CustomData *data) {
-  GError *err;
-  gchar *debug_info;
+static gboolean on_bus_message(GstBus *bus, GstMessage *msg, CustomData *data) {
+    switch (GST_MESSAGE_TYPE(msg)) {
+        case GST_MESSAGE_ERROR: {
+            GError *err;
+            gchar *debug_info;
 
-  /* Print error details on the screen */
-  gst_message_parse_error (msg, &err, &debug_info);
-  g_printerr ("Error received from element %s: %s\n", GST_OBJECT_NAME (msg->src), err->message);
-  g_printerr ("Debugging information: %s\n", debug_info ? debug_info : "none");
-  g_clear_error (&err);
-  g_free (debug_info);
+            gst_message_parse_error(msg, &err, &debug_info);
+            g_printerr("Error received from element %s: %s\n", GST_OBJECT_NAME(msg->src), err->message);
+            g_printerr("Debugging information: %s\n", debug_info ? debug_info : "none");
+            g_clear_error(&err);
+            g_free(debug_info);
 
-  // 发生错误时，同样发送 EOS 信号，以便安全退出
-  send_eos_and_quit(data); 
-}
+            if (data->pipeline) {
+                stop_recording(data);
+                gst_element_set_state(data->pipeline, GST_STATE_NULL);
+                gst_object_unref(data->pipeline);
+                data->pipeline = NULL;
+            }
+            gtk_main_quit();
+            break;
+        }
 
-/* 流结束回调 */
-static void eos_cb (GstBus *bus, GstMessage *msg, CustomData *data) {
+        case GST_MESSAGE_EOS: {
 #ifdef DEBUG
-  g_print ("End-Of-Stream reached. Quitting application safely.\n");
+            g_print("End-Of-Stream reached on main pipeline. Quitting application safely.\n");
 #endif
-  if (data->pipeline) {
-      stop_recording(data);
-      gst_element_set_state(data->pipeline, GST_STATE_NULL);
-      gst_object_unref(data->pipeline);
-      data->pipeline = NULL;
-  }
-  gtk_main_quit();
+
+            if (data->pipeline) {
+                stop_recording(data); // 停止录制分支
+                gst_element_set_state(data->pipeline, GST_STATE_NULL);
+                gst_object_unref(data->pipeline);
+                data->pipeline = NULL;
+            }
+            gtk_main_quit();
+            break;
+        }
+
+        case GST_MESSAGE_ELEMENT: {
+            if (gst_message_has_name(msg, "GstBinForwarded")) {
+                const GstStructure *s = gst_message_get_structure(msg);
+                const GValue *gv = gst_structure_get_value(s, "message");
+                GstMessage *forwarded_msg = NULL;
+
+                if (G_VALUE_HOLDS_BOXED(gv)) {
+                    forwarded_msg = (GstMessage *)g_value_get_boxed(gv);
+                }
+
+                if (forwarded_msg != NULL && GST_MESSAGE_TYPE(forwarded_msg) == GST_MESSAGE_EOS) {
+                    if (data->is_stopping_recording && 
+                        GST_ELEMENT_CAST(GST_OBJECT_PARENT(GST_MESSAGE_SRC(forwarded_msg))) == data->recording_bin) {
+#ifdef DEBUG
+                             g_print("Received forwarded EOS from recording sink. Initiating final cleanup via idle function.\n");
+#endif
+                             g_idle_add(cleanup_recording_async, data);
+                    }
+                }
+            }
+            break;
+        }
+        default:
+            break;
+    }
+    return TRUE;
 }
 
 int main(int argc, char *argv[]) {
@@ -214,8 +255,7 @@ int main(int argc, char *argv[]) {
 
   bus = gst_element_get_bus (data.pipeline);
   gst_bus_add_signal_watch (bus);
-  g_signal_connect (G_OBJECT (bus), "message::error", (GCallback)error_cb, &data);
-  g_signal_connect (G_OBJECT (bus), "message::eos", (GCallback)eos_cb, &data);
+  g_signal_connect (G_OBJECT (bus), "message", (GCallback)on_bus_message, &data);
   gst_object_unref (bus);
 
   ret = gst_element_set_state (data.pipeline, GST_STATE_PLAYING);
@@ -237,6 +277,18 @@ int main(int argc, char *argv[]) {
 
   if (data.record_icon) {
       data.record_icon = NULL;
+  }
+
+  if (data.recording_bin) {
+      gst_element_set_state(data.recording_bin, GST_STATE_NULL);
+      gst_bin_remove(GST_BIN(data.pipeline), data.recording_bin);
+      gst_object_unref(data.recording_bin);
+      data.recording_bin = NULL;
+  }
+
+  if (data.recording_filename) {
+      g_free(data.recording_filename);
+      data.recording_filename = NULL;
   }
 
   if (data.pipeline) {

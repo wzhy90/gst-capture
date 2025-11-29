@@ -13,13 +13,19 @@ typedef struct _CustomData {
   GstElement *video_tee;              /* 视频 Tee 元素 */
   GstElement *audio_tee;              /* 音频 Tee 元素 */
 
+  GstElement *recording_bin;          /* 录制子管道容器 (GstBin) */
+  GstPad *video_tee_q_pad;            /* 从视频 Tee 请求的 Pad (用于取消链接和释放) */
+  GstPad *audio_tee_q_pad;            /* 从音频 Tee 请求的 Pad (用于取消链接和释放) */
+
   GtkWidget *sink_widget;             /* 视频显示组件 */
   GtkWidget *main_window;             /* 主窗口指针, 用于全屏/退出控制 */
   dictionary *config_dict;            /* 指向解析后的配置数据的指针 */
 
   gboolean has_tee;                   /* 标志是否存在 tee 元素 */
   gboolean is_recording;              /* 录制状态标志 */
-  GtkWidget *record_icon;
+  gboolean is_stopping_recording;     /* 正在停止/清理过程中的标志 */
+  gchar *recording_filename;          /* 录制文件名指针 */
+  GtkWidget *record_icon;             /* 录制图标指针 */
 } CustomData;
 
 /*

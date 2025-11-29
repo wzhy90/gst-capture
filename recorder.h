@@ -22,6 +22,6 @@ gboolean stop_recording(CustomData *data);
  * user_data: Pointer to the CustomData structure (used in g_idle_add).
  * Returns: G_SOURCE_REMOVE to stop the idle source.
  */
-gboolean cleanup_recording_branch(gpointer user_data);
+gboolean cleanup_recording_async(gpointer user_data);
 
 #endif // RECORDER_H
