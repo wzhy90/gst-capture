@@ -39,3 +39,4 @@ GstElement* create_and_add_element(const char *factory_name, const char *element
 void configure_element_from_ini(GstElement *element, dictionary *dict, const char *section_name);
 
 #endif // CONFIG_H
+

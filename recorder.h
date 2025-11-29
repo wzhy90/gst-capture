@@ -25,3 +25,4 @@ gboolean stop_recording(CustomData *data);
 gboolean cleanup_recording_async(gpointer user_data);
 
 #endif // RECORDER_H
+

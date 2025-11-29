@@ -21,3 +21,4 @@ void set_element_property(GstElement *element, const char *key_name, const char 
 void configure_element_from_ini(GstElement *element, dictionary *dict, const char *section_name);
 
 #endif // UTILS_H
+

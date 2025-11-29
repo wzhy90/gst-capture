@@ -8,9 +8,6 @@
 #include <stdio.h>
 #include <iniparser.h>
 
-static GstPad *video_tee_q_pad = NULL;
-static GstPad *audio_tee_q_pad = NULL;
-
 gboolean cleanup_recording_async(gpointer user_data) {
     CustomData *data = (CustomData *)user_data;
 

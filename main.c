@@ -96,6 +96,43 @@ static gboolean key_press_event_cb (GtkWidget *widget, GdkEvent *event, CustomDa
   return FALSE;
 }
 
+/* 辅助函数：清理所有应用程序数据和 GStreamer 资源 */
+static void cleanup_application_data(CustomData *data) {
+#ifdef DEBUG
+    g_print("Cleaning up application resources.\n");
+#endif
+    if (data->config_dict) {
+        iniparser_freedict(data->config_dict);
+        data->config_dict = NULL;
+    }
+
+    data->record_icon = NULL; 
+
+    if (data->recording_bin) {
+        gst_element_set_state(data->recording_bin, GST_STATE_NULL);
+        GstObject *parent = gst_object_get_parent(GST_OBJECT(data->recording_bin));
+        if (parent == GST_OBJECT(data->pipeline)) {
+            gst_bin_remove(GST_BIN(data->pipeline), data->recording_bin);
+        }
+        if (parent) {
+            gst_object_unref(parent); 
+        }
+        data->recording_bin = NULL;
+    }
+
+    if (data->recording_filename) {
+        g_free(data->recording_filename);
+        data->recording_filename = NULL;
+    }
+
+    if (data->pipeline) {
+        stop_recording(data); 
+        gst_element_set_state(data->pipeline, GST_STATE_NULL);
+        gst_object_unref(data->pipeline);
+        data->pipeline = NULL;
+    }
+}
+
 /* 创建UI组件并注册回调 */
 static void create_ui (CustomData *data) {
   GtkWidget *main_box;     /* 主容器 */
@@ -172,12 +209,7 @@ static gboolean on_bus_message(GstBus *bus, GstMessage *msg, CustomData *data) {
             g_clear_error(&err);
             g_free(debug_info);
 
-            if (data->pipeline) {
-                stop_recording(data);
-                gst_element_set_state(data->pipeline, GST_STATE_NULL);
-                gst_object_unref(data->pipeline);
-                data->pipeline = NULL;
-            }
+            cleanup_application_data(data); 
             gtk_main_quit();
             break;
         }
@@ -186,13 +218,7 @@ static gboolean on_bus_message(GstBus *bus, GstMessage *msg, CustomData *data) {
 #ifdef DEBUG
             g_print("End-Of-Stream reached on main pipeline. Quitting application safely.\n");
 #endif
-
-            if (data->pipeline) {
-                stop_recording(data); // 停止录制分支
-                gst_element_set_state(data->pipeline, GST_STATE_NULL);
-                gst_object_unref(data->pipeline);
-                data->pipeline = NULL;
-            }
+            cleanup_application_data(data); 
             gtk_main_quit();
             break;
         }
@@ -243,11 +269,8 @@ int main(int argc, char *argv[]) {
 
   if (!initialize_gstreamer_pipeline(&data)) {
       g_printerr("Failed to initialize GStreamer pipeline. Exiting.\n");
-      if (data.pipeline) {
-          gst_element_set_state(data.pipeline, GST_STATE_NULL);
-          gst_object_unref(data.pipeline);
-      }
-      iniparser_freedict(data.config_dict);
+      // 使用新的清理函数
+      cleanup_application_data(&data);
       return -1;
   }
 
@@ -261,42 +284,14 @@ int main(int argc, char *argv[]) {
   ret = gst_element_set_state (data.pipeline, GST_STATE_PLAYING);
   if (ret == GST_STATE_CHANGE_FAILURE) {
     g_printerr ("Unable to set the pipeline to the playing state.\n");
-    stop_recording(&data);
-    gst_element_set_state (data.pipeline, GST_STATE_NULL);
-    gst_object_unref (data.pipeline);
-    iniparser_freedict(data.config_dict);
+    // 使用新的清理函数
+    cleanup_application_data(&data);
     return -1;
   }
 
   gtk_main ();
 
-  if (data.config_dict) {
-      iniparser_freedict(data.config_dict);
-      data.config_dict = NULL;
-  }
-
-  if (data.record_icon) {
-      data.record_icon = NULL;
-  }
-
-  if (data.recording_bin) {
-      gst_element_set_state(data.recording_bin, GST_STATE_NULL);
-      gst_bin_remove(GST_BIN(data.pipeline), data.recording_bin);
-      gst_object_unref(data.recording_bin);
-      data.recording_bin = NULL;
-  }
-
-  if (data.recording_filename) {
-      g_free(data.recording_filename);
-      data.recording_filename = NULL;
-  }
-
-  if (data.pipeline) {
-      stop_recording(&data);
-      gst_element_set_state(data.pipeline, GST_STATE_NULL);
-      gst_object_unref(data.pipeline);
-      data.pipeline = NULL;
-  }
+  cleanup_application_data(&data);
 
   return 0;
 }
