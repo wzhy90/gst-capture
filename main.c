@@ -11,8 +11,6 @@
 
 #define CONFIG_FILE "config.ini"
 
-static GtkWidget *global_record_icon = NULL;
-
 /* 辅助函数：用于安全地向管道发送 EOS 事件，启动退出流程 */
 static gboolean send_eos_and_quit (gpointer user_data) {
   CustomData *data = (CustomData *)user_data;
@@ -60,11 +58,11 @@ static void fullscreen_button_cb (GtkButton *button, CustomData *data) {
 static void record_button_cb (GtkButton *button, CustomData *data) {
     if (data->is_recording) {
         stop_recording(data);
-        gtk_image_set_from_icon_name(GTK_IMAGE(global_record_icon), "media-record-symbolic", GTK_ICON_SIZE_SMALL_TOOLBAR);
+        gtk_image_set_from_icon_name(GTK_IMAGE(data->record_icon), "media-record-symbolic", GTK_ICON_SIZE_SMALL_TOOLBAR);
     } else {
         start_recording(data);
         if (data->is_recording) {
-            gtk_image_set_from_icon_name(GTK_IMAGE(global_record_icon), "media-playback-stop-symbolic", GTK_ICON_SIZE_SMALL_TOOLBAR);
+            gtk_image_set_from_icon_name(GTK_IMAGE(data->record_icon), "media-playback-stop-symbolic", GTK_ICON_SIZE_SMALL_TOOLBAR);
         }
     }
 }
@@ -125,7 +123,7 @@ static void create_ui (CustomData *data) {
     /* 创建录制按钮，使用一个图标 */
     record_button = gtk_button_new_from_icon_name("media-record-symbolic", GTK_ICON_SIZE_SMALL_TOOLBAR);
     g_signal_connect (G_OBJECT (record_button), "clicked", G_CALLBACK (record_button_cb), data);
-    global_record_icon = gtk_button_get_image(GTK_BUTTON(record_button));
+    data->record_icon = gtk_button_get_image(GTK_BUTTON(record_button));
     /* 将新按钮打包到 header bar 的末尾 */
     gtk_header_bar_pack_end(GTK_HEADER_BAR(header_bar), record_button);
   }
@@ -237,8 +235,8 @@ int main(int argc, char *argv[]) {
       data.config_dict = NULL;
   }
 
-  if (global_record_icon) {
-  global_record_icon = NULL;
+  if (data.record_icon) {
+      data.record_icon = NULL;
   }
 
   if (data.pipeline) {

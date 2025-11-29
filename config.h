@@ -19,6 +19,7 @@ typedef struct _CustomData {
 
   gboolean has_tee;                   /* 标志是否存在 tee 元素 */
   gboolean is_recording;              /* 录制状态标志 */
+  GtkWidget *record_icon;
 } CustomData;
 
 /*
