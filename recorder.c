@@ -31,11 +31,9 @@ gboolean cleanup_recording_async(gpointer user_data) {
     if (data->pipeline && data->recording_bin) {
         gst_bin_remove(GST_BIN(data->pipeline), data->recording_bin);
     }
-    if (data->recording_bin) {
-        gst_object_unref(data->recording_bin);
-        data->recording_bin = NULL;
-    }
-        
+
+    data->recording_bin = NULL; 
+
     // --- 2. 清理其他标志和字符串 ---
     if (data->recording_filename) {
         g_free(data->recording_filename);
@@ -183,7 +181,6 @@ gboolean start_recording(CustomData *data) {
     }
 
     // --- 5. 为 Bin 创建幽灵垫 (Ghost Pads) 作为输入接口 ---
-    // 参考文章中的关键步骤：将内部 queue 的 sink pad 映射为 bin 的公共 sink pad
     GstPad *v_queue_sink_pad = gst_element_get_static_pad(video_record_queue, "sink");
     GstPad *a_queue_sink_pad = gst_element_get_static_pad(audio_record_queue, "sink");
     
