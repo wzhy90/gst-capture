@@ -7,6 +7,9 @@
 
 /* 结构体包含所有需要传递的信息 (与 main.c 中的定义一致) */
 typedef struct _CustomData {
+  GtkApplication *app;                /* 指向 GtkApplication 实例的指针 */
+  guint inhibit_cookie;               /* 用于取消 inhibit 的 ID */
+
   GstElement *pipeline;               /* 主管道 */
   GstElement *videosink;              /* 视频输出元素 */
 

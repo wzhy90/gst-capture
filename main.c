@@ -11,31 +11,70 @@
 
 #define CONFIG_FILE "config.ini"
 
+static void create_ui (CustomData *data);
+static void cleanup_application_data(CustomData *data);
+static gboolean on_bus_message(GstBus *bus, GstMessage *msg, CustomData *data);
+
+
+/* 辅助函数：清理所有应用程序数据和 GStreamer 资源 */
+static void cleanup_application_data(CustomData *data) {
+#ifdef DEBUG
+    g_print("Cleaning up application resources.\n");
+#endif
+    if (data->app && data->inhibit_cookie > 0) {
+        gtk_application_uninhibit(data->app, data->inhibit_cookie);
+        data->inhibit_cookie = 0;
+#ifdef DEBUG
+        g_print("System inhibit request removed.\n");
+#endif
+    }
+
+    if (data->config_dict) {
+        iniparser_freedict(data->config_dict);
+        data->config_dict = NULL;
+    }
+
+    data->record_icon = NULL; 
+
+    GstElement *recording_bin_temp = g_atomic_pointer_exchange(&data->recording_bin, NULL);
+    if (recording_bin_temp) {
+        gst_element_set_state(recording_bin_temp, GST_STATE_NULL);
+        gst_object_unref(recording_bin_temp);
+    }
+
+    if (data->recording_filename) {
+        g_free(data->recording_filename);
+        data->recording_filename = NULL;
+    }
+
+    GstElement *pipeline_temp = g_atomic_pointer_exchange(&data->pipeline, NULL);
+    if (pipeline_temp) {
+        stop_recording(data); 
+        gst_element_set_state(pipeline_temp, GST_STATE_NULL);
+        gst_object_unref(pipeline_temp);
+    }
+}
+
 /* 辅助函数：用于安全地向管道发送 EOS 事件，启动退出流程 */
 static gboolean send_eos_and_quit (gpointer user_data) {
   CustomData *data = (CustomData *)user_data;
   if (!data) {
-      gtk_main_quit();
+      g_application_quit(G_APPLICATION(data->app));
       return G_SOURCE_REMOVE;
   }
 #ifdef DEBUG
   g_print("Sending EOS event to the pipeline.\n");
 #endif
   if (data->pipeline) {
-      // 发送 EOS 事件。管道将处理完剩余数据并最终发送 EOS 消息到总线
       gst_element_send_event(data->pipeline, gst_event_new_eos());
   } else {
-      // 如果管道不存在，直接退出 GTK 主循环
-      gtk_main_quit();
+      g_application_quit(G_APPLICATION(data->app));
   }
   return G_SOURCE_REMOVE;
 }
 
-/* 主窗口关闭回调 */
-static gboolean delete_event_cb (GtkWidget *widget, GdkEvent *event, CustomData *data) {
-  // 当窗口关闭时，调用发送 EOS 的函数
-  send_eos_and_quit(data);
-  return TRUE;
+static void on_window_destroy(GtkWidget *widget, CustomData *data) {
+    send_eos_and_quit(data);
 }
 
 /* 全屏切换逻辑的实现函数 */
@@ -96,43 +135,6 @@ static gboolean key_press_event_cb (GtkWidget *widget, GdkEvent *event, CustomDa
   return FALSE;
 }
 
-/* 辅助函数：清理所有应用程序数据和 GStreamer 资源 */
-static void cleanup_application_data(CustomData *data) {
-#ifdef DEBUG
-    g_print("Cleaning up application resources.\n");
-#endif
-    if (data->config_dict) {
-        iniparser_freedict(data->config_dict);
-        data->config_dict = NULL;
-    }
-
-    data->record_icon = NULL; 
-
-    if (data->recording_bin) {
-        gst_element_set_state(data->recording_bin, GST_STATE_NULL);
-        GstObject *parent = gst_object_get_parent(GST_OBJECT(data->recording_bin));
-        if (parent == GST_OBJECT(data->pipeline)) {
-            gst_bin_remove(GST_BIN(data->pipeline), data->recording_bin);
-        }
-        if (parent) {
-            gst_object_unref(parent); 
-        }
-        data->recording_bin = NULL;
-    }
-
-    if (data->recording_filename) {
-        g_free(data->recording_filename);
-        data->recording_filename = NULL;
-    }
-
-    if (data->pipeline) {
-        stop_recording(data); 
-        gst_element_set_state(data->pipeline, GST_STATE_NULL);
-        gst_object_unref(data->pipeline);
-        data->pipeline = NULL;
-    }
-}
-
 /* 创建UI组件并注册回调 */
 static void create_ui (CustomData *data) {
   GtkWidget *main_box;     /* 主容器 */
@@ -140,9 +142,8 @@ static void create_ui (CustomData *data) {
   GtkWidget *record_button;     /* 录制按钮 */
   GtkWidget *fullscreen_button; /* 全屏按钮 */
 
-  data->main_window = gtk_window_new (GTK_WINDOW_TOPLEVEL);
-  g_signal_connect (G_OBJECT (data->main_window), "delete-event", G_CALLBACK (delete_event_cb), data);
-  /* 连接键盘事件回调到主窗口 */
+  data->main_window = gtk_application_window_new (data->app);
+  g_signal_connect (G_OBJECT (data->main_window), "destroy", G_CALLBACK (on_window_destroy), data);
   g_signal_connect (G_OBJECT (data->main_window), "key-press-event", G_CALLBACK (key_press_event_cb), data);
 
   const char* icon_path = iniparser_getstring(data->config_dict, "main:icon", "app_icon.svg");
@@ -198,6 +199,13 @@ static void create_ui (CustomData *data) {
   gtk_window_set_position (GTK_WINDOW (data->main_window), GTK_WIN_POS_CENTER);
 
   gtk_widget_show_all (data->main_window);
+
+  data->inhibit_cookie = gtk_application_inhibit(
+      data->app,
+      GTK_WINDOW(data->main_window),
+      GTK_APPLICATION_INHIBIT_SUSPEND | GTK_APPLICATION_INHIBIT_IDLE,
+      "Video Playback Active"
+  );
 }
 
 static gboolean on_bus_message(GstBus *bus, GstMessage *msg, CustomData *data) {
@@ -213,7 +221,7 @@ static gboolean on_bus_message(GstBus *bus, GstMessage *msg, CustomData *data) {
             g_free(debug_info);
 
             cleanup_application_data(data); 
-            gtk_main_quit();
+            g_application_quit(G_APPLICATION(data->app));
             break;
         }
 
@@ -221,8 +229,8 @@ static gboolean on_bus_message(GstBus *bus, GstMessage *msg, CustomData *data) {
 #ifdef DEBUG
             g_print("End-Of-Stream reached on main pipeline. Quitting application safely.\n");
 #endif
-            cleanup_application_data(data); 
-            gtk_main_quit();
+            cleanup_application_data(data);
+            g_application_quit(G_APPLICATION(data->app));
             break;
         }
 
@@ -254,48 +262,53 @@ static gboolean on_bus_message(GstBus *bus, GstMessage *msg, CustomData *data) {
     return TRUE;
 }
 
+static void on_activate(GtkApplication* app, gpointer user_data) {
+    CustomData *data = (CustomData *)user_data;
+    data->app = app; // 保存 app 指针到数据结构
+
+    data->config_dict = iniparser_load(CONFIG_FILE);
+    if (!data->config_dict) {
+        g_printerr("Fatal error: Could not open or parse configuration file %s\n", CONFIG_FILE);
+        g_application_quit(G_APPLICATION(app));
+        return;
+    }
+
+    if (!initialize_gstreamer_pipeline(data)) {
+        g_printerr("Failed to initialize GStreamer pipeline. Exiting.\n");
+        cleanup_application_data(data);
+        g_application_quit(G_APPLICATION(app));
+        return;
+    }
+
+    create_ui (data);
+
+    GstBus *bus = gst_element_get_bus (data->pipeline);
+    gst_bus_add_signal_watch (bus);
+    g_signal_connect (G_OBJECT (bus), "message", (GCallback)on_bus_message, data);
+    gst_object_unref (bus);
+
+    GstStateChangeReturn ret = gst_element_set_state (data->pipeline, GST_STATE_PLAYING);
+    if (ret == GST_STATE_CHANGE_FAILURE) {
+        g_printerr ("Unable to set the pipeline to the playing state.\n");
+        cleanup_application_data(data);
+        g_application_quit(G_APPLICATION(app));
+        return;
+    }
+}
+
 int main(int argc, char *argv[]) {
   CustomData data = {0};
-  GstStateChangeReturn ret;
-  GstBus *bus;
+  int status;
 
-  data.has_tee = FALSE; 
+  data.app = gtk_application_new("org.gstcapture", G_APPLICATION_DEFAULT_FLAGS);
+  g_signal_connect(data.app, "activate", G_CALLBACK(on_activate), &data);
 
-  gtk_init (&argc, &argv);
   gst_init (&argc, &argv);
 
-  data.config_dict = iniparser_load(CONFIG_FILE);
-  if (!data.config_dict) {
-      g_printerr("Fatal error: Could not open or parse configuration file %s\n", CONFIG_FILE);
-      return -1;
-  }
+  status = g_application_run(G_APPLICATION(data.app), argc, argv);
 
-  if (!initialize_gstreamer_pipeline(&data)) {
-      g_printerr("Failed to initialize GStreamer pipeline. Exiting.\n");
-      // 使用新的清理函数
-      cleanup_application_data(&data);
-      return -1;
-  }
+  g_object_unref(data.app);
 
-  create_ui (&data);
-
-  bus = gst_element_get_bus (data.pipeline);
-  gst_bus_add_signal_watch (bus);
-  g_signal_connect (G_OBJECT (bus), "message", (GCallback)on_bus_message, &data);
-  gst_object_unref (bus);
-
-  ret = gst_element_set_state (data.pipeline, GST_STATE_PLAYING);
-  if (ret == GST_STATE_CHANGE_FAILURE) {
-    g_printerr ("Unable to set the pipeline to the playing state.\n");
-    // 使用新的清理函数
-    cleanup_application_data(&data);
-    return -1;
-  }
-
-  gtk_main ();
-
-  cleanup_application_data(&data);
-
-  return 0;
+  return status;
 }
 
