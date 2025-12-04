@@ -1,7 +1,9 @@
 #include "utils.h"
+#include <glib-object.h>
+#include <gst/gst.h>
 #include <string.h>
 #include <stdlib.h>
-#include <stdio.h> // for g_print/g_printerr
+#include <stdio.h>
 #include <iniparser/iniparser.h>
 #include <iniparser/dictionary.h>
 
@@ -19,6 +21,40 @@ GstElement* create_and_add_element(const char *factory_name, const char *element
     return element;
 }
 
+static gboolean parse_flags_string(GType flags_type, const gchar *value_str, gint *out_value) {
+    g_autoptr(GFlagsClass) flags_class = g_type_class_ref(flags_type);
+    g_autofree gchar **flags_nicks = NULL;
+    gint combined_value = 0;
+    gboolean success = TRUE;
+
+    flags_nicks = g_strsplit_set(value_str, "|,", -1);
+
+    for (int i = 0; flags_nicks != NULL && flags_nicks[i] != NULL; i++) {
+        const gchar *nick = g_strstrip(flags_nicks[i]);
+
+        if (strlen(nick) == 0) continue;
+
+        GFlagsValue *flag_value = g_flags_get_value_by_nick(flags_class, nick);
+        if (flag_value == NULL) {
+            flag_value = g_flags_get_value_by_name(flags_class, nick);
+        }
+
+        if (flag_value != NULL) {
+            combined_value |= flag_value->value;
+        } else {
+            g_printerr("Error: Unknown flag '%s' for type %s.\n", nick, g_type_name(flags_type));
+            success = FALSE;
+            break;
+        }
+    }
+
+    if (success) {
+        *out_value = combined_value;
+    }
+
+    return success;
+}
+
 // 辅助函数：手动将字符串值转换为 GStreamer 属性类型并设置
 void set_element_property(GstElement *element, const char *key_name, const char *value_str) {
     GParamSpec *pspec;
@@ -32,12 +68,37 @@ void set_element_property(GstElement *element, const char *key_name, const char 
     }
 
     GType value_type = G_PARAM_SPEC_VALUE_TYPE(pspec);
-    const gchar *type_name = g_type_name(value_type); // 获取类型名称字符串
-
+    const gchar *type_name = g_type_name(value_type);
     gboolean success = FALSE;
+    gint int_val = 0;
 
-    // 根据类型名称字符串进行匹配和手动转换
-    if (g_strcmp0(type_name, "GstCaps") == 0) {
+    if (G_TYPE_IS_ENUM(value_type)) {
+        GEnumValue *enum_value;
+        g_autoptr(GEnumClass) enum_class = g_type_class_ref(value_type);
+
+        enum_value = g_enum_get_value_by_nick(enum_class, value_str);
+        if (enum_value == NULL) {
+             enum_value = g_enum_get_value_by_name(enum_class, value_str);
+        }
+
+        if (enum_value != NULL) {
+            int_val = enum_value->value;
+            success = TRUE;
+        } else {
+            char *endptr;
+            long num_val = strtol(value_str, &endptr, 10);
+            if (*endptr == '\0' && value_str[0] != '\0') {
+               int_val = (gint)num_val;
+               success = TRUE;
+            }
+        }
+    } else if (G_TYPE_IS_FLAGS(value_type)) {
+        success = parse_flags_string(value_type, value_str, &int_val);
+    }
+
+    if (success) {
+        g_object_set(G_OBJECT(element), key_name, int_val, NULL);
+    } else if (g_strcmp0(type_name, "GstCaps") == 0) {
         // 直接匹配 "GstCaps" 类型名称，并进行特殊处理
         g_autoptr(GstCaps) caps = gst_caps_from_string(value_str);
         if (caps) {
@@ -59,29 +120,14 @@ void set_element_property(GstElement *element, const char *key_name, const char 
         success = TRUE;
     } else if (g_strcmp0(type_name, "gint64") == 0 || g_strcmp0(type_name, "guint64") == 0 ||
                g_strcmp0(type_name, "glong") == 0 || g_strcmp0(type_name, "gulong") == 0) {
-        // 使用标准 C 库的 strtoll
         gint64 long_val = (gint64)strtoll(value_str, NULL, 10);
         g_object_set(G_OBJECT(element), key_name, long_val, NULL);
         success = TRUE;
     } else if (g_strcmp0(type_name, "gfloat") == 0 || g_strcmp0(type_name, "gdouble") == 0) {
-        // 使用 GLib 的 g_strtod
         gdouble double_val = g_strtod(value_str, NULL);
         g_object_set(G_OBJECT(element), key_name, double_val, NULL);
         success = TRUE;
-    } else if (g_strcmp0(type_name, "GstVideoFormat") == 0) {
-        gint int_val = (gint)strtol(value_str, NULL, 10);
-        g_object_set(G_OBJECT(element), key_name, int_val, NULL);
-        success = TRUE;
-    } else if (g_strcmp0(type_name, "GstAacBitrateMode") == 0) {
-        gint int_val = (gint)strtol(value_str, NULL, 10);
-        g_object_set(G_OBJECT(element), key_name, int_val, NULL);
-        success = TRUE;
-    } else if (g_strcmp0(type_name, "GstOpusEncBitrateType") == 0) {
-        gint int_val = (gint)strtol(value_str, NULL, 10);
-        g_object_set(G_OBJECT(element), key_name, int_val, NULL);
-        success = TRUE;
     }
-    // 注意：枚举类型 (GstEnum) 和标志类型 (GstFlags) 需要更复杂的处理，这里暂不支持。
 
     if (success) {
 #ifdef DEBUG
