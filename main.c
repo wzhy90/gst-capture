@@ -2,6 +2,8 @@
 #include <gst/gst.h>
 #include <stdlib.h>
 
+#include <glib-unix.h>
+
 #include <time.h>
 #include <stdio.h>
 
@@ -220,6 +222,16 @@ static void create_ui (CustomData *data) {
   );
 }
 
+static gboolean signal_handler(gpointer user_data) {
+    CustomData *data = (CustomData *)user_data;
+#ifdef DEBUG
+    g_print("System signal caught (SIGINT or SIGTERM). Initiating graceful application quit.\n");
+#endif
+    send_eos_and_quit(data);
+
+    return G_SOURCE_REMOVE; 
+}
+
 static gboolean on_bus_message(GstBus *bus, GstMessage *msg, CustomData *data) {
     switch (GST_MESSAGE_TYPE(msg)) {
         case GST_MESSAGE_ERROR: {
@@ -311,6 +323,9 @@ int main(int argc, char *argv[]) {
 
   data.app = gtk_application_new("org.gstcapture", G_APPLICATION_DEFAULT_FLAGS);
   g_signal_connect(data.app, "activate", G_CALLBACK(on_activate), &data);
+
+  g_unix_signal_add(SIGINT, signal_handler, &data);
+  g_unix_signal_add(SIGTERM, signal_handler, &data);
 
   gst_init (&argc, &argv);
 
