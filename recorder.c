@@ -11,7 +11,9 @@
 gboolean cleanup_recording_async(gpointer user_data) {
     CustomData *data = (CustomData *)user_data;
 
-    if (!data->recording_bin) {
+    g_autoptr(GstElement) recording_bin_temp = g_atomic_pointer_exchange(&data->recording_bin, NULL);
+
+    if (!recording_bin_temp) {
         data->is_recording = FALSE;
         data->is_stopping_recording = FALSE;
         return G_SOURCE_REMOVE; 
@@ -20,16 +22,14 @@ gboolean cleanup_recording_async(gpointer user_data) {
     g_print("Executing asynchronous recording cleanup...\n");
 #endif
     // --- 1. 将整个 Bin 状态设置为 GST_STATE_NULL ---
-    GstStateChangeReturn state_ret = gst_element_set_state(data->recording_bin, GST_STATE_NULL);
-    if (state_ret == GST_STATE_CHANGE_FAILURE) {
-         g_printerr("Async: Failed to set recording bin to NULL state.\n");
-    }
+    gst_element_set_state(recording_bin_temp, GST_STATE_NULL);
 
-    if (data->pipeline && data->recording_bin) {
-        gst_bin_remove(GST_BIN(data->pipeline), data->recording_bin);
+    if (data->pipeline) {
+         g_autoptr(GstObject) parent = gst_object_get_parent(GST_OBJECT(recording_bin_temp));
+         if (parent == GST_OBJECT(data->pipeline)) {
+             gst_bin_remove(GST_BIN(data->pipeline), g_steal_pointer(&recording_bin_temp));
+         }
     }
-
-    data->recording_bin = NULL; 
 
     // --- 2. 清理其他标志和字符串 ---
     if (data->recording_filename) {
@@ -57,19 +57,16 @@ gboolean stop_recording(CustomData *data) {
     g_print("Stopping recording...\n");
     data->is_stopping_recording = TRUE;
 
-    GstPad *v_bin_sink_pad = gst_element_get_static_pad(data->recording_bin, "videosink");
-    GstPad *a_bin_sink_pad = gst_element_get_static_pad(data->recording_bin, "audiosink");
+    g_autoptr(GstPad) v_bin_sink_pad = gst_element_get_static_pad(data->recording_bin, "videosink");
+    g_autoptr(GstPad) a_bin_sink_pad = gst_element_get_static_pad(data->recording_bin, "audiosink");
     
     if (v_bin_sink_pad) {
         gst_pad_send_event(v_bin_sink_pad, gst_event_new_eos());
-        gst_object_unref(v_bin_sink_pad);
     }
     if (a_bin_sink_pad) {
         gst_pad_send_event(a_bin_sink_pad, gst_event_new_eos());
-        gst_object_unref(a_bin_sink_pad);
     }
     
-    // --- 立即从 Tee 侧取消动态链接并释放 Pad ---
     if (data->video_tee_q_pad && data->video_tee) {
         gst_element_release_request_pad(data->video_tee, data->video_tee_q_pad);
         data->video_tee_q_pad = NULL;
@@ -91,10 +88,8 @@ gboolean start_recording(CustomData *data) {
     }
 
     g_print("Starting recording...\n");
-    gboolean success = TRUE;
     dictionary *dict = data->config_dict;
     GstElement *muxer, *filesink, *video_record_queue, *video_encoder, *video_parser, *audio_record_queue, *audio_encoder;
-    GstPad *v_tee_src_pad = NULL, *a_tee_src_pad = NULL;
 
     // --- 1. 获取 INI 配置参数 ---
     const char *record_path = iniparser_getstring(dict, "main:record_path", "/tmp");
@@ -118,7 +113,6 @@ gboolean start_recording(CustomData *data) {
     data->recording_bin = gst_bin_new("recording-bin");
     if (!data->recording_bin) {
         g_printerr("Failed to create recording bin.\n");
-        success = FALSE;
         goto cleanup;
     }
     g_object_set(G_OBJECT(data->recording_bin), "message-forward", TRUE, NULL);
@@ -134,7 +128,6 @@ gboolean start_recording(CustomData *data) {
 
     if (!video_record_queue || !video_encoder || !video_parser || !audio_record_queue || !audio_encoder || !muxer || !filesink) {
         g_printerr("One or more recording elements could not be created.\n");
-        success = FALSE;
         goto cleanup;
     }
 
@@ -153,7 +146,6 @@ gboolean start_recording(CustomData *data) {
     // 尝试创建目录（包括父目录）
     if (g_mkdir_with_parents(record_path, 0755) == -1 && errno != EEXIST) {
         g_printerr("Failed to create recording directory: %s\n", record_path);
-        success = FALSE;
         goto cleanup;
     }
 
@@ -173,20 +165,24 @@ gboolean start_recording(CustomData *data) {
     if (!gst_element_link_many(video_record_queue, video_encoder, video_parser, muxer, NULL) ||
         !gst_element_link_many(audio_record_queue, audio_encoder, muxer, filesink, NULL)) { // filesink 直接连到 muxer
         g_printerr("Failed to link recording elements inside the bin.\n");
-        success = FALSE;
         goto cleanup;
     }
 
-    // --- 5. 为 Bin 创建幽灵垫 (Ghost Pads) 作为输入接口 ---
-    GstPad *v_queue_sink_pad = gst_element_get_static_pad(video_record_queue, "sink");
-    GstPad *a_queue_sink_pad = gst_element_get_static_pad(audio_record_queue, "sink");
-    
-    gst_element_add_pad(data->recording_bin, gst_ghost_pad_new("videosink", v_queue_sink_pad));
-    gst_element_add_pad(data->recording_bin, gst_ghost_pad_new("audiosink", a_queue_sink_pad));
-    
-    // 幽灵垫创建后，原始 pad 的引用计数由 bin 管理，我们可以 unref 掉局部引用
-    gst_object_unref(v_queue_sink_pad);
-    gst_object_unref(a_queue_sink_pad);
+    {
+        // --- 5. 为 Bin 创建幽灵垫 (Ghost Pads) 作为输入接口 ---
+        g_autoptr(GstPad) v_queue_sink_pad = gst_element_get_static_pad(video_record_queue, "sink");
+        g_autoptr(GstPad) a_queue_sink_pad = gst_element_get_static_pad(audio_record_queue, "sink");
+
+        if (!v_queue_sink_pad || !a_queue_sink_pad) {
+            g_printerr("Failed to get sink pads for queues.\n");
+            goto end_of_scope0;
+        }
+
+        gst_element_add_pad(data->recording_bin, gst_ghost_pad_new("videosink", g_steal_pointer(&v_queue_sink_pad)));
+        gst_element_add_pad(data->recording_bin, gst_ghost_pad_new("audiosink", g_steal_pointer(&a_queue_sink_pad)));
+
+    end_of_scope0:;
+    }
 
     // --- 6. 将整个 Bin 添加到主 Pipeline ---
     gst_bin_add(GST_BIN(data->pipeline), data->recording_bin);
@@ -194,48 +190,51 @@ gboolean start_recording(CustomData *data) {
     // 在链接之前，将 bin 状态同步到 PAUSED （可选，但有助于 preroll）
     gst_element_set_state(data->recording_bin, GST_STATE_PAUSED);
 
-    // --- 7. 动态链接主 Pipeline 的 Tee 到 Bin 的幽灵垫 ---
-    v_tee_src_pad = gst_element_request_pad_simple(data->video_tee, "src_%u"); 
-    a_tee_src_pad = gst_element_request_pad_simple(data->audio_tee, "src_%u");
+    {
+        // --- 7. 动态链接主 Pipeline 的 Tee 到 Bin 的幽灵垫 ---
+        g_autoptr(GstPad) v_tee_src_pad = gst_element_request_pad_simple(data->video_tee, "src_%u"); 
+        g_autoptr(GstPad) a_tee_src_pad = gst_element_request_pad_simple(data->audio_tee, "src_%u");
 
-    GstPad *v_bin_sink_pad = gst_element_get_static_pad(data->recording_bin, "videosink");
-    GstPad *a_bin_sink_pad = gst_element_get_static_pad(data->recording_bin, "audiosink");
+        g_autoptr(GstPad) v_bin_sink_pad = gst_element_get_static_pad(data->recording_bin, "videosink");
+        g_autoptr(GstPad) a_bin_sink_pad = gst_element_get_static_pad(data->recording_bin, "audiosink");
 
-    if (!v_tee_src_pad || !v_bin_sink_pad || !a_tee_src_pad || !a_bin_sink_pad ||
-        gst_pad_link(v_tee_src_pad, v_bin_sink_pad) != GST_PAD_LINK_OK ||
-        gst_pad_link(a_tee_src_pad, a_bin_sink_pad) != GST_PAD_LINK_OK) {
-        g_printerr("Failed to dynamically link tees to recording bin.\n");
-        // 链接失败，需要记录 pad 引用以便在 cleanup 释放
-        data->video_tee_q_pad = v_tee_src_pad; // 存起来以便 cleanup 释放请求的 pad
-        data->audio_tee_q_pad = a_tee_src_pad;
-        if(v_bin_sink_pad) gst_object_unref(v_bin_sink_pad);
-        if(a_bin_sink_pad) gst_object_unref(a_bin_sink_pad);
-        success = FALSE;
-        goto cleanup;
-    }
+        if (!v_tee_src_pad || !v_bin_sink_pad || !a_tee_src_pad || !a_bin_sink_pad ||
+            gst_pad_link(v_tee_src_pad, v_bin_sink_pad) != GST_PAD_LINK_OK ||
+            gst_pad_link(a_tee_src_pad, a_bin_sink_pad) != GST_PAD_LINK_OK) {
+            g_printerr("Failed to dynamically link tees to recording bin.\n");
+            // 链接失败，需要记录 pad 引用以便在 cleanup 释放
+            data->video_tee_q_pad = g_steal_pointer(&v_tee_src_pad);
+            data->audio_tee_q_pad = g_steal_pointer(&a_tee_src_pad);
+            goto end_of_scope1;
+        }
 
-    // 将请求到的 tee pad 存储在 CustomData 中，以便在 stop_recording 时释放
-    data->video_tee_q_pad = v_tee_src_pad;
-    data->audio_tee_q_pad = a_tee_src_pad;
-    
-    // 释放获取的 bin sink pad 引用
-    gst_object_unref(v_bin_sink_pad);
-    gst_object_unref(a_bin_sink_pad);
+        // 将请求到的 tee pad 存储在 CustomData 中，以便在 stop_recording 时释放
+        data->video_tee_q_pad = g_steal_pointer(&v_tee_src_pad);
+        data->audio_tee_q_pad = g_steal_pointer(&a_tee_src_pad);
 
-    // --- 8. 将 Bin 状态同步到父容器的 PLAYING 状态 ---
-    // 这将启动整个录制分支
-    gst_element_sync_state_with_parent(data->recording_bin);
+        // --- 8. 将 Bin 状态同步到父容器的 PLAYING 状态 ---
+        gst_element_sync_state_with_parent(data->recording_bin);
 
 #ifdef DEBUG
-    g_print("Recording pipeline linked successfully.\n");
+        g_print("Recording pipeline linked successfully.\n");
 #endif
-    g_print("Recording started.\n");
-    data->is_recording = TRUE;
-    return TRUE;
+        g_print("Recording started.\n");
+        data->is_recording = TRUE;
+        return TRUE;
+    end_of_scope1:;
+    }
 
 cleanup:
     g_printerr("Failed to start recording. Cleaning up.\n");
-    stop_recording(data); 
+
+    if (data->recording_bin) {
+         gst_element_set_state(data->recording_bin, GST_STATE_NULL);
+         gst_object_unref(data->recording_bin);
+         data->recording_bin = NULL;
+    }
+
+    g_idle_add(cleanup_recording_async, data);
+
     return FALSE;
 }
 

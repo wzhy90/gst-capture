@@ -36,10 +36,9 @@ static void cleanup_application_data(CustomData *data) {
 
     data->record_icon = NULL; 
 
-    GstElement *recording_bin_temp = g_atomic_pointer_exchange(&data->recording_bin, NULL);
+    g_autoptr(GstElement) recording_bin_temp = g_atomic_pointer_exchange(&data->recording_bin, NULL);
     if (recording_bin_temp) {
         gst_element_set_state(recording_bin_temp, GST_STATE_NULL);
-        gst_object_unref(recording_bin_temp);
     }
 
     if (data->recording_filename) {
@@ -47,11 +46,10 @@ static void cleanup_application_data(CustomData *data) {
         data->recording_filename = NULL;
     }
 
-    GstElement *pipeline_temp = g_atomic_pointer_exchange(&data->pipeline, NULL);
+    g_autoptr(GstElement) pipeline_temp = g_atomic_pointer_exchange(&data->pipeline, NULL);
     if (pipeline_temp) {
         stop_recording(data); 
         gst_element_set_state(pipeline_temp, GST_STATE_NULL);
-        gst_object_unref(pipeline_temp);
     }
 }
 
@@ -211,14 +209,12 @@ static void create_ui (CustomData *data) {
 static gboolean on_bus_message(GstBus *bus, GstMessage *msg, CustomData *data) {
     switch (GST_MESSAGE_TYPE(msg)) {
         case GST_MESSAGE_ERROR: {
-            GError *err;
-            gchar *debug_info;
+            g_autoptr(GError) err = NULL;
+            g_autofree gchar *debug_info = NULL;
 
             gst_message_parse_error(msg, &err, &debug_info);
             g_printerr("Error received from element %s: %s\n", GST_OBJECT_NAME(msg->src), err->message);
             g_printerr("Debugging information: %s\n", debug_info ? debug_info : "none");
-            g_clear_error(&err);
-            g_free(debug_info);
 
             cleanup_application_data(data); 
             g_application_quit(G_APPLICATION(data->app));
@@ -282,10 +278,9 @@ static void on_activate(GtkApplication* app, gpointer user_data) {
 
     create_ui (data);
 
-    GstBus *bus = gst_element_get_bus (data->pipeline);
+    g_autoptr(GstBus) bus = gst_element_get_bus (data->pipeline);
     gst_bus_add_signal_watch (bus);
     g_signal_connect (G_OBJECT (bus), "message", (GCallback)on_bus_message, data);
-    gst_object_unref (bus);
 
     GstStateChangeReturn ret = gst_element_set_state (data->pipeline, GST_STATE_PLAYING);
     if (ret == GST_STATE_CHANGE_FAILURE) {

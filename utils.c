@@ -39,10 +39,9 @@ void set_element_property(GstElement *element, const char *key_name, const char 
     // 根据类型名称字符串进行匹配和手动转换
     if (g_strcmp0(type_name, "GstCaps") == 0) {
         // 直接匹配 "GstCaps" 类型名称，并进行特殊处理
-        GstCaps *caps = gst_caps_from_string(value_str);
+        g_autoptr(GstCaps) caps = gst_caps_from_string(value_str);
         if (caps) {
             g_object_set(G_OBJECT(element), key_name, caps, NULL);
-            gst_caps_unref(caps);
             success = TRUE;
         }
     } else if (g_strcmp0(type_name, "gchararray") == 0) {
@@ -117,9 +116,6 @@ void configure_element_from_ini(GstElement *element, dictionary *dict, const cha
     // 分配内存来存储指向键字符串的指针数组
     const char **keys = g_newa(const char*, num_keys);
 
-    // 使用正确的函数 iniparser_getseckeys_titles 来填充 keys 数组 (如果需要完整的 section:key 格式)
-    // 或者 iniparser_getseckeys 来填充仅键名
-    // 您的原始代码使用了 iniparser_getseckeys，它返回 "section:key" 格式
     if (!iniparser_getseckeys(dict, section_ptr, keys)) {
         g_printerr("Failed to retrieve keys for section [%s].\n", section_ptr);
         return;
