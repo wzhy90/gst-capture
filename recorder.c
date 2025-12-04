@@ -42,6 +42,10 @@ gboolean cleanup_recording_async(gpointer user_data) {
 #ifdef DEBUG
     g_print("Async recording cleanup complete. Recording stopped.\n");
 #endif
+    if (data->dialog) {
+        gtk_widget_destroy(data->dialog);
+        data->dialog = NULL;
+    }
     return G_SOURCE_REMOVE; 
 }
 

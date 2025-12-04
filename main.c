@@ -12,7 +12,6 @@
 #define CONFIG_FILE "config.ini"
 
 static void create_ui (CustomData *data);
-static void cleanup_application_data(CustomData *data);
 static gboolean on_bus_message(GstBus *bus, GstMessage *msg, CustomData *data);
 
 
@@ -48,7 +47,6 @@ static void cleanup_application_data(CustomData *data) {
 
     g_autoptr(GstElement) pipeline_temp = g_atomic_pointer_exchange(&data->pipeline, NULL);
     if (pipeline_temp) {
-        stop_recording(data); 
         gst_element_set_state(pipeline_temp, GST_STATE_NULL);
     }
 }
@@ -63,6 +61,21 @@ static gboolean send_eos_and_quit (gpointer user_data) {
 #ifdef DEBUG
   g_print("Sending EOS event to the pipeline.\n");
 #endif
+
+  if (data->is_recording) {
+#ifdef DEBUG
+      g_print("Recording active during quit request, initiating graceful stop.\n");
+#endif
+      stop_recording(data);
+      data->dialog = gtk_message_dialog_new(GTK_WINDOW(data->main_window),
+                                                 GTK_DIALOG_DESTROY_WITH_PARENT,
+                                                 GTK_MESSAGE_INFO,
+                                                 GTK_BUTTONS_NONE,
+                                                 "正在停止录制，请稍候...");
+      gtk_window_set_title(GTK_WINDOW(data->dialog), "退出程序");
+      gtk_dialog_run(GTK_DIALOG(data->dialog));
+  }
+
   if (data->pipeline) {
       gst_element_send_event(data->pipeline, gst_event_new_eos());
   } else {
@@ -71,8 +84,9 @@ static gboolean send_eos_and_quit (gpointer user_data) {
   return G_SOURCE_REMOVE;
 }
 
-static void on_window_destroy(GtkWidget *widget, CustomData *data) {
-    send_eos_and_quit(data);
+static gboolean on_delete_event(GtkWidget *widget, GdkEvent *event, CustomData *data) {
+    g_idle_add(send_eos_and_quit, data);
+    return TRUE;
 }
 
 /* 全屏切换逻辑的实现函数 */
@@ -141,7 +155,7 @@ static void create_ui (CustomData *data) {
   GtkWidget *fullscreen_button; /* 全屏按钮 */
 
   data->main_window = gtk_application_window_new (data->app);
-  g_signal_connect (G_OBJECT (data->main_window), "destroy", G_CALLBACK (on_window_destroy), data);
+  g_signal_connect (G_OBJECT (data->main_window), "delete-event", G_CALLBACK (on_delete_event), data);
   g_signal_connect (G_OBJECT (data->main_window), "key-press-event", G_CALLBACK (key_press_event_cb), data);
 
   const char* icon_path = iniparser_getstring(data->config_dict, "main:icon", "app_icon.svg");

@@ -29,6 +29,8 @@ typedef struct _CustomData {
   gboolean is_stopping_recording;     /* 正在停止/清理过程中的标志 */
   gchar *recording_filename;          /* 录制文件名指针 */
   GtkWidget *record_icon;             /* 录制图标指针 */
+
+  GtkWidget *dialog;
 } CustomData;
 
 /*
