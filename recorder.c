@@ -100,6 +100,9 @@ gboolean start_recording(CustomData *data) {
     const char *video_encoder_name = iniparser_getstring(dict, "main:encoder", "x264enc");
     const char *audio_encoder_name = "fdkaacenc";
     const char *video_parser_name = NULL;
+    const char *muxer_name = "mp4mux";
+    const char *extension = ".mp4";
+    g_autofree char *filename_with_ext = NULL;
 
     if (strstr(video_encoder_name, "h264") != NULL || strstr(video_encoder_name, "x264") != NULL) {
         video_parser_name = "h264parse";
@@ -108,6 +111,8 @@ gboolean start_recording(CustomData *data) {
     } else if (strstr(video_encoder_name, "vp9") != NULL) {
         video_parser_name = "vp9parse";
         audio_encoder_name = "opusenc";
+        muxer_name = "webmmux";
+        extension = ".webm";
     } else {
         g_printerr("Warning: Unknown encoder %s. Defaulting to h264parse, this might fail.\n", video_encoder_name);
         video_parser_name = "h264parse";
@@ -127,7 +132,7 @@ gboolean start_recording(CustomData *data) {
     video_parser         = gst_element_factory_make(video_parser_name, "record-video-parser");
     audio_record_queue = gst_element_factory_make("queue", "record-audio-queue");
     audio_encoder        = gst_element_factory_make(audio_encoder_name, "record-audio-encoder");
-    muxer                = gst_element_factory_make("mp4mux", "record-muxer");
+    muxer                = gst_element_factory_make(muxer_name, "record-muxer");
     filesink             = gst_element_factory_make("filesink", "record-filesink");
 
     if (!video_record_queue || !video_encoder || !video_parser || !audio_record_queue || !audio_encoder || !muxer || !filesink) {
@@ -145,7 +150,7 @@ gboolean start_recording(CustomData *data) {
     configure_element_from_ini(audio_record_queue, dict, "queue_record");
     configure_element_from_ini(video_encoder, dict, video_encoder_name);
     configure_element_from_ini(audio_encoder, dict, audio_encoder_name);
-    configure_element_from_ini(muxer, dict, "mp4mux");
+    configure_element_from_ini(muxer, dict, muxer_name);
 
     // 尝试创建目录（包括父目录）
     if (g_mkdir_with_parents(record_path, 0755) == -1 && errno != EEXIST) {
@@ -159,8 +164,9 @@ gboolean start_recording(CustomData *data) {
     char timestamp[80];
     time(&rawtime);
     info = localtime(&rawtime);
-    strftime(timestamp, sizeof(timestamp), "%Y%m%d-%H%M%S.mp4", info);
-    data->recording_filename = g_build_filename(record_path, timestamp, NULL);
+    strftime(timestamp, sizeof(timestamp), "%Y%m%d-%H%M%S", info);
+    filename_with_ext = g_strdup_printf("%s%s", timestamp, extension);
+    data->recording_filename = g_build_filename(record_path, filename_with_ext, NULL);
 
     g_print("Saving recording to: %s\n", data->recording_filename);
     g_object_set(G_OBJECT(filesink), "location", data->recording_filename, NULL);
