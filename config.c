@@ -55,6 +55,8 @@ gboolean initialize_gstreamer_pipeline(CustomData *data) {
 
             if (strncmp(ini_section_name, "capsfilter", strlen("capsfilter")) == 0) {
                 factory_name = "capsfilter";
+            } else if (strncmp(ini_section_name, "vapostproc", strlen("vapostproc")) == 0) {
+                 factory_name = "vapostproc";
             } else if (strncmp(ini_section_name, "vaapipostproc", strlen("vaapipostproc")) == 0) {
                  factory_name = "vaapipostproc";
             } else if (strcmp(factory_name, "queue") == 0) {
