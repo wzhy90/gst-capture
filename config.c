@@ -12,6 +12,7 @@ gboolean initialize_gstreamer_pipeline(CustomData *data) {
         return FALSE;
     }
 
+    data->default_show_fps = iniparser_getboolean(dict, "main:fps", FALSE);
     data->pipeline = gst_pipeline_new("camera-pipeline");
     GstBin *bin = GST_BIN(data->pipeline);
     GstElement *last_video_element = NULL;

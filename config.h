@@ -26,6 +26,9 @@ typedef struct _CustomData {
 
   GtkWidget *fps_label;               /* 用于在标题栏显示 FPS 文本的标签 */
   guint fps_timer_id;                 /* GTK 定时器 ID */
+  gboolean default_show_fps;          /* 從 INI 讀取的預設是否顯示 FPS */
+  guint64 last_rendered_count;        /* 上一次的總渲染幀數 */
+  gint64 last_fps_time;               /* 上一次計算 FPS 的時間戳 */
 
   dictionary *config_dict;            /* 指向解析后的配置数据的指针 */
 

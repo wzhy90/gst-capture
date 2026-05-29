@@ -137,17 +137,35 @@ static gboolean refresh_fps_status_cb(gpointer user_data) {
     if (!data->gtkglsink || !data->fps_label) return G_SOURCE_CONTINUE;
 
     GstStructure *stats = NULL;
-    // 从 gtkglsink 读取 stats 结构体
     g_object_get(data->gtkglsink, "stats", &stats, NULL);
 
     if (stats) {
-        gdouble average_rate = 0.0;
-        // 提取 stats 内部的 average-rate 值
-        if (gst_structure_get_double(stats, "average-rate", &average_rate)) {
-            gchar *fps_text = g_strdup_printf("%5.1f", average_rate);
-            gtk_label_set_text(GTK_LABEL(data->fps_label), fps_text);
-            gtk_widget_show(data->fps_label);
-            g_free(fps_text);
+        guint64 current_rendered = 0;
+        // 1. 抓取底層自開機以來「總共成功渲染的畫格數」
+        if (gst_structure_get_uint64(stats, "rendered", &current_rendered)) {
+            gint64 current_time = g_get_monotonic_time(); // 獲取當前微秒級時間
+
+            // 2. 如果不是第一次執行，計算與上一秒的差值
+            if (data->last_fps_time > 0) {
+                double time_diff_sec = (double)(current_time - data->last_fps_time) / 1000000.0;
+                guint64 frames_diff = current_rendered - data->last_rendered_count;
+
+                // 計算瞬時幀率 = 幀數差 / 時間差
+                double instant_fps = (double)frames_diff / time_diff_sec;
+
+                // 防止極端情況下（比如剛切換全螢幕時時間抖動）數值異常
+                if (instant_fps < 0.0) instant_fps = 0.0;
+
+                // 3. 漂亮地顯示在左上角（直角 24px 等寬字體）
+                gchar *fps_text = g_strdup_printf("%6.2f", instant_fps);
+                gtk_label_set_text(GTK_LABEL(data->fps_label), fps_text);
+                gtk_widget_show(data->fps_label);
+                g_free(fps_text);
+            }
+
+            // 4. 更新歷史紀錄，供下一秒計算使用
+            data->last_rendered_count = current_rendered;
+            data->last_fps_time = current_time;
         }
         gst_structure_free(stats);
     }
@@ -159,13 +177,15 @@ static void fps_button_cb (GtkToggleButton *button, CustomData *data) {
     gboolean show_fps = gtk_toggle_button_get_active(button);
 
     if (show_fps) {
-        // 开启：创建定时器，每 1000 毫秒（1秒）调用一次刷新函数
+        // 每次打開開關時，重設時間戳和計數器
+        data->last_rendered_count = 0;
+        data->last_fps_time = 0;
+
         if (data->fps_timer_id == 0) {
             data->fps_timer_id = g_timeout_add(500, refresh_fps_status_cb, data);
         }
         refresh_fps_status_cb(data);
     } else {
-        // 关闭：销毁定时器，并清空 Label 上的文本
         if (data->fps_timer_id != 0) {
             g_source_remove(data->fps_timer_id);
             data->fps_timer_id = 0;
@@ -273,9 +293,9 @@ static void create_ui (CustomData *data) {
   gtk_widget_set_halign(data->fps_label, GTK_ALIGN_START);
   gtk_widget_set_valign(data->fps_label, GTK_ALIGN_START);
   
-  /* 6. 設置邊距，防止死貼著螢幕邊緣 */
-  gtk_widget_set_margin_top(data->fps_label, 15);
-  gtk_widget_set_margin_end(data->fps_label, 15);
+  /* 6. 將外邊距完全歸零 */
+  gtk_widget_set_margin_top(data->fps_label, 0);
+  gtk_widget_set_margin_start(data->fps_label, 0);
 
   /* 7. 使用 CSS 注入美化懸浮 OSD 文字（黑底綠字，等寬字體） */
   GtkStyleContext *context = gtk_widget_get_style_context(data->fps_label);
@@ -283,12 +303,15 @@ static void create_ui (CustomData *data) {
   gtk_css_provider_load_from_data(provider,
       "label {"
       "  color: #00FF00;"               /* 經典綠色數位字體 */
-      "  background-color: rgba(0, 0, 0, 0.6);" /* 60% 透明度的黑色背景 */
-      "  font-family: 'Monospace', 'Courier New';" /* 等寬字體，防止數字跳動時框框抖動 */
-      "  font-size: 16px;"              /* 增大字號，全螢幕也清晰可見 */
+      "  background-color: rgba(0, 0, 0, 0.42);" /* 40% 透明度的黑色背景 */
+      "  font-family: 'Roboto Mono', monospace;" /* 等寬字體，防止數字跳動時框框抖動 */
+      "  font-size: 24px;"              /* 增大字號，全螢幕也清晰可見 */
       "  font-weight: bold;"
-      "  padding: 6px 12px;"            /* 內邊距 */
-      "  border-radius: 6px;"           /* 圓角 */
+      "  padding-top: 0px; "
+      "  padding-bottom: 2px;"
+      "  padding-left: 5px;"
+      "  padding-right: 5px;"
+      "  border-radius: 0px;"           /* 圓角 */
       "}", -1, NULL);
   gtk_style_context_add_provider(context, GTK_STYLE_PROVIDER(provider), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
   g_object_unref(provider);
@@ -316,8 +339,15 @@ static void create_ui (CustomData *data) {
   /* 必須先 show_all 才能確保組件正常渲染 */
   gtk_widget_show_all (data->main_window);
 
-  /* 默認隱藏 FPS Label，直到點擊開關按鈕才顯示 */
-  gtk_widget_hide(data->fps_label);
+  if (data->default_show_fps) {
+      // 如果 INI 為 1/true/yes，將按鈕設為選中狀態（這會自動觸發 fps_button_cb 定時器）
+      gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(fps_button), TRUE);
+      gtk_widget_show(data->fps_label);
+  } else {
+      // 如果 INI 為 0/false/no，按鈕保持未選中，且隱藏標籤
+      gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(fps_button), FALSE);
+      gtk_widget_hide(data->fps_label);
+  }
 
   data->inhibit_cookie = gtk_application_inhibit(
       data->app,
