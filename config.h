@@ -12,6 +12,7 @@ typedef struct _CustomData {
 
   GstElement *pipeline;               /* 主管道 */
   GstElement *videosink;              /* 视频输出元素 */
+  GstElement *gtkglsink;              /* gtkglsink 指针 */
 
   GstElement *video_tee;              /* 视频 Tee 元素 */
   GstElement *audio_tee;              /* 音频 Tee 元素 */
@@ -22,6 +23,10 @@ typedef struct _CustomData {
 
   GtkWidget *sink_widget;             /* 视频显示组件 */
   GtkWidget *main_window;             /* 主窗口指针, 用于全屏/退出控制 */
+
+  GtkWidget *fps_label;               /* 用于在标题栏显示 FPS 文本的标签 */
+  guint fps_timer_id;                 /* GTK 定时器 ID */
+
   dictionary *config_dict;            /* 指向解析后的配置数据的指针 */
 
   gboolean has_tee;                   /* 标志是否存在 tee 元素 */

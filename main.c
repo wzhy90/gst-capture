@@ -30,6 +30,11 @@ static void cleanup_application_data(CustomData *data) {
 #endif
     }
 
+    if (data->fps_timer_id > 0) {
+        g_source_remove(data->fps_timer_id);
+        data->fps_timer_id = 0;
+    }
+
     if (data->config_dict) {
         iniparser_freedict(data->config_dict);
         data->config_dict = NULL;
@@ -126,6 +131,50 @@ static void record_button_cb (GtkButton *button, CustomData *data) {
     }
 }
 
+/* 定时器回调函数：每秒执行一次，从 stats 属性中抓取真实帧率 */
+static gboolean refresh_fps_status_cb(gpointer user_data) {
+    CustomData *data = (CustomData *)user_data;
+    if (!data->gtkglsink || !data->fps_label) return G_SOURCE_CONTINUE;
+
+    GstStructure *stats = NULL;
+    // 从 gtkglsink 读取 stats 结构体
+    g_object_get(data->gtkglsink, "stats", &stats, NULL);
+
+    if (stats) {
+        gdouble average_rate = 0.0;
+        // 提取 stats 内部的 average-rate 值
+        if (gst_structure_get_double(stats, "average-rate", &average_rate)) {
+            gchar *fps_text = g_strdup_printf("%5.1f", average_rate);
+            gtk_label_set_text(GTK_LABEL(data->fps_label), fps_text);
+            gtk_widget_show(data->fps_label);
+            g_free(fps_text);
+        }
+        gst_structure_free(stats);
+    }
+    return G_SOURCE_CONTINUE;
+}
+
+/* 帧率切换按钮点击回呼函数 */
+static void fps_button_cb (GtkToggleButton *button, CustomData *data) {
+    gboolean show_fps = gtk_toggle_button_get_active(button);
+
+    if (show_fps) {
+        // 开启：创建定时器，每 1000 毫秒（1秒）调用一次刷新函数
+        if (data->fps_timer_id == 0) {
+            data->fps_timer_id = g_timeout_add(500, refresh_fps_status_cb, data);
+        }
+        refresh_fps_status_cb(data);
+    } else {
+        // 关闭：销毁定时器，并清空 Label 上的文本
+        if (data->fps_timer_id != 0) {
+            g_source_remove(data->fps_timer_id);
+            data->fps_timer_id = 0;
+        }
+        gtk_label_set_text(GTK_LABEL(data->fps_label), "");
+        gtk_widget_hide(data->fps_label); 
+    }
+}
+
 /* 键盘事件回调函数 */
 static gboolean key_press_event_cb (GtkWidget *widget, GdkEvent *event, CustomData *data) {
   guint keyval;
@@ -152,9 +201,11 @@ static gboolean key_press_event_cb (GtkWidget *widget, GdkEvent *event, CustomDa
 /* 创建UI组件并注册回调 */
 static void create_ui (CustomData *data) {
   GtkWidget *main_box;     /* 主容器 */
+  GtkWidget *overlay;
   GtkWidget *header_bar;   /* 标题栏 */
   GtkWidget *record_button;     /* 录制按钮 */
   GtkWidget *fullscreen_button; /* 全屏按钮 */
+  GtkWidget *fps_button;        /* 帧率开关按钮 */
 
   data->main_window = gtk_application_window_new (data->app);
   g_signal_connect (G_OBJECT (data->main_window), "delete-event", G_CALLBACK (on_delete_event), data);
@@ -179,6 +230,11 @@ static void create_ui (CustomData *data) {
   /* 将按钮打包到 header bar 的末尾（右侧） */
   gtk_header_bar_pack_end(GTK_HEADER_BAR(header_bar), fullscreen_button);
 
+  /* 创建控制 FPS 显示的开关按钮 */
+  fps_button = gtk_toggle_button_new_with_label("FPS");
+  g_signal_connect (G_OBJECT (fps_button), "toggled", G_CALLBACK (fps_button_cb), data);
+  gtk_header_bar_pack_end(GTK_HEADER_BAR(header_bar), fps_button);
+
   // 根据 has_tee 决定是否显示录制按钮
   if (data->has_tee) {
     /* 创建录制按钮，使用一个图标 */
@@ -194,10 +250,55 @@ static void create_ui (CustomData *data) {
 
   /* 主布局 (垂直排列，只包含视频区域，HeaderBar由gtk_window_set_titlebar管理) */
   main_box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
-  gtk_box_pack_start (GTK_BOX (main_box), data->sink_widget, TRUE, TRUE, 0); 
-
   gtk_container_add (GTK_CONTAINER (data->main_window), main_box);
 
+  /* 2. 創建 Overlay 容器並打包進主容器 */
+  overlay = gtk_overlay_new();
+  gtk_box_pack_start(GTK_BOX(main_box), overlay, TRUE, TRUE, 0);
+
+  /* 3. 從 GStreamer 獲取視頻渲染組件 (gtkglsink 創建的 widget) */
+  if (data->gtkglsink) {
+      g_object_get(data->gtkglsink, "widget", &data->sink_widget, NULL);
+  } else {
+      g_printerr("Error: data->gtkglsink is NULL, cannot get GTK widget!\n");
+  }
+  
+  /* 4. 把視頻組件作為 Overlay 的「底層主畫面」 */
+  if (data->sink_widget) {
+      gtk_container_add(GTK_CONTAINER(overlay), data->sink_widget);
+  }
+
+  /* 5. 創建 FPS 文本標籤並設置右上角懸浮對齊 */
+  data->fps_label = gtk_label_new("");
+  gtk_widget_set_halign(data->fps_label, GTK_ALIGN_START);
+  gtk_widget_set_valign(data->fps_label, GTK_ALIGN_START);
+  
+  /* 6. 設置邊距，防止死貼著螢幕邊緣 */
+  gtk_widget_set_margin_top(data->fps_label, 15);
+  gtk_widget_set_margin_end(data->fps_label, 15);
+
+  /* 7. 使用 CSS 注入美化懸浮 OSD 文字（黑底綠字，等寬字體） */
+  GtkStyleContext *context = gtk_widget_get_style_context(data->fps_label);
+  GtkCssProvider *provider = gtk_css_provider_new();
+  gtk_css_provider_load_from_data(provider,
+      "label {"
+      "  color: #00FF00;"               /* 經典綠色數位字體 */
+      "  background-color: rgba(0, 0, 0, 0.6);" /* 60% 透明度的黑色背景 */
+      "  font-family: 'Monospace', 'Courier New';" /* 等寬字體，防止數字跳動時框框抖動 */
+      "  font-size: 16px;"              /* 增大字號，全螢幕也清晰可見 */
+      "  font-weight: bold;"
+      "  padding: 6px 12px;"            /* 內邊距 */
+      "  border-radius: 6px;"           /* 圓角 */
+      "}", -1, NULL);
+  gtk_style_context_add_provider(context, GTK_STYLE_PROVIDER(provider), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+  g_object_unref(provider);
+
+  /* 8. 把 FPS 標籤作為「懸浮層」疊加到視頻畫面上方 */
+  gtk_overlay_add_overlay(GTK_OVERLAY(overlay), data->fps_label);
+
+  /* ================================================================= */
+  /* 視窗尺寸與顯示處理 */
+  /* ================================================================= */
   gint width = 1280;
   gint height = 720;
   const char *win_size_str = iniparser_getstring(data->config_dict, "main:win_size", NULL);
@@ -212,7 +313,11 @@ static void create_ui (CustomData *data) {
   gtk_window_set_default_size (GTK_WINDOW (data->main_window), width, height);
   gtk_window_set_position (GTK_WINDOW (data->main_window), GTK_WIN_POS_CENTER);
 
+  /* 必須先 show_all 才能確保組件正常渲染 */
   gtk_widget_show_all (data->main_window);
+
+  /* 默認隱藏 FPS Label，直到點擊開關按鈕才顯示 */
+  gtk_widget_hide(data->fps_label);
 
   data->inhibit_cookie = gtk_application_inhibit(
       data->app,

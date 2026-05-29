@@ -105,6 +105,8 @@ gboolean initialize_gstreamer_pipeline(CustomData *data) {
             if (gtkglsink) gst_object_unref(gtkglsink);
             success = FALSE;
         } else {
+            data->gtkglsink = gtkglsink;
+
             configure_element_from_ini(data->videosink, dict, "glsinkbin");
             configure_element_from_ini(gtkglsink, dict, "gtkglsink");
             g_object_set (data->videosink, "sink", gtkglsink, NULL);
