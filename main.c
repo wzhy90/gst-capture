@@ -157,7 +157,7 @@ static gboolean refresh_fps_status_cb(gpointer user_data) {
                 if (instant_fps < 0.0) instant_fps = 0.0;
 
                 // 3. 漂亮地顯示在左上角（直角 24px 等寬字體）
-                gchar *fps_text = g_strdup_printf("%6.2f", instant_fps);
+                gchar *fps_text = g_strdup_printf("%.2f", instant_fps);
                 gtk_label_set_text(GTK_LABEL(data->fps_label), fps_text);
                 gtk_widget_show(data->fps_label);
                 g_free(fps_text);
@@ -182,7 +182,7 @@ static void fps_button_cb (GtkToggleButton *button, CustomData *data) {
         data->last_fps_time = 0;
 
         if (data->fps_timer_id == 0) {
-            data->fps_timer_id = g_timeout_add(500, refresh_fps_status_cb, data);
+            data->fps_timer_id = g_timeout_add_full(G_PRIORITY_HIGH, 500, refresh_fps_status_cb, data, NULL);
         }
         refresh_fps_status_cb(data);
     } else {
