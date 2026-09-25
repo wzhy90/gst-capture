@@ -1,9 +1,7 @@
 #include <gtk/gtk.h>
 #include <gst/gst.h>
 #include <stdlib.h>
-
 #include <glib-unix.h>
-
 #include <time.h>
 #include <stdio.h>
 
@@ -15,7 +13,6 @@
 
 static void create_ui (CustomData *data);
 static gboolean on_bus_message(GstBus *bus, GstMessage *msg, CustomData *data);
-
 
 /* 辅助函数：清理所有应用程序数据和 GStreamer 资源 */
 static void cleanup_application_data(CustomData *data) {
@@ -69,7 +66,7 @@ static gboolean send_eos_and_quit (gpointer user_data) {
   g_print("Sending EOS event to the pipeline.\n");
 #endif
 
-  if (data->is_recording) {
+  if (g_atomic_int_get(&data->is_recording)) {
 #ifdef DEBUG
       g_print("Recording active during quit request, initiating graceful stop.\n");
 #endif
@@ -92,11 +89,13 @@ static gboolean send_eos_and_quit (gpointer user_data) {
 }
 
 static gboolean on_delete_event(GtkWidget *widget, GdkEvent *event, CustomData *data) {
+    (void)widget;
+    (void)event;
     g_idle_add(send_eos_and_quit, data);
     return TRUE;
 }
 
-/* 全屏切换逻辑的实现函数 */
+/* 全屏切换逻辑 */
 static void toggle_fullscreen(CustomData *data) {
     static gboolean is_fullscreen = FALSE;
     if (is_fullscreen) {
@@ -109,23 +108,25 @@ static void toggle_fullscreen(CustomData *data) {
 
 /* 按钮点击回调函数 */
 static void fullscreen_button_cb (GtkButton *button, CustomData *data) {
+    (void)button;
     toggle_fullscreen(data);
 }
 
 /* 录制按钮点击回调函数 */
 static void record_button_cb (GtkButton *button, CustomData *data) {
+    (void)button;
     if (data->is_stopping_recording) {
 #ifdef DEBUG
         g_print("Recording is currently stopping/cleaning up. Please wait.\n");
 #endif
         return;
     }
-    if (data->is_recording) {
+    if (g_atomic_int_get(&data->is_recording)) {
         stop_recording(data);
         gtk_image_set_from_icon_name(GTK_IMAGE(data->record_icon), "media-record-symbolic", GTK_ICON_SIZE_SMALL_TOOLBAR);
     } else {
         start_recording(data);
-        if (data->is_recording) {
+        if (g_atomic_int_get(&data->is_recording)) {
             gtk_image_set_from_icon_name(GTK_IMAGE(data->record_icon), "media-playback-stop-symbolic", GTK_ICON_SIZE_SMALL_TOOLBAR);
         }
     }
@@ -143,7 +144,7 @@ static gboolean refresh_fps_status_cb(gpointer user_data) {
         guint64 current_rendered = 0;
         // 1. 抓取底層自開機以來「總共成功渲染的畫格數」
         if (gst_structure_get_uint64(stats, "rendered", &current_rendered)) {
-            gint64 current_time = g_get_monotonic_time(); // 獲取當前微秒級時間
+            gint64 current_time = g_get_monotonic_time();
 
             // 2. 如果不是第一次執行，計算與上一秒的差值
             if (data->last_fps_time > 0) {
@@ -182,7 +183,7 @@ static void fps_button_cb (GtkToggleButton *button, CustomData *data) {
         data->last_fps_time = 0;
 
         if (data->fps_timer_id == 0) {
-            data->fps_timer_id = g_timeout_add_full(G_PRIORITY_HIGH, 500, refresh_fps_status_cb, data, NULL);
+            data->fps_timer_id = g_timeout_add_full(G_PRIORITY_DEFAULT_IDLE, 500, refresh_fps_status_cb, data, NULL);
         }
         refresh_fps_status_cb(data);
     } else {
@@ -197,6 +198,7 @@ static void fps_button_cb (GtkToggleButton *button, CustomData *data) {
 
 /* 键盘事件回调函数 */
 static gboolean key_press_event_cb (GtkWidget *widget, GdkEvent *event, CustomData *data) {
+  (void)widget;
   guint keyval;
   gdk_event_get_keyval(event, &keyval);
 
@@ -368,6 +370,7 @@ static gboolean signal_handler(gpointer user_data) {
 }
 
 static gboolean on_bus_message(GstBus *bus, GstMessage *msg, CustomData *data) {
+    (void)bus;
     switch (GST_MESSAGE_TYPE(msg)) {
         case GST_MESSAGE_ERROR: {
             g_autoptr(GError) err = NULL;
@@ -421,7 +424,7 @@ static gboolean on_bus_message(GstBus *bus, GstMessage *msg, CustomData *data) {
 
 static void on_activate(GtkApplication* app, gpointer user_data) {
     CustomData *data = (CustomData *)user_data;
-    data->app = app; // 保存 app 指针到数据结构
+    data->app = app;
 
     data->config_dict = iniparser_load(CONFIG_FILE);
     if (!data->config_dict) {
@@ -455,6 +458,8 @@ static void on_activate(GtkApplication* app, gpointer user_data) {
 int main(int argc, char *argv[]) {
   CustomData data = {0};
   int status;
+  g_atomic_int_set(&data.is_recording, FALSE);
+  g_atomic_int_set(&data.is_stopping_recording, FALSE);
 
   data.app = gtk_application_new("org.gstcapture", G_APPLICATION_DEFAULT_FLAGS);
   g_signal_connect(data.app, "activate", G_CALLBACK(on_activate), &data);
@@ -470,4 +475,3 @@ int main(int argc, char *argv[]) {
 
   return status;
 }
-

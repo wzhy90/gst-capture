@@ -8,27 +8,34 @@
 #include <stdio.h>
 #include <iniparser.h>
 
+/* 异步清理录制 Bin 及关联资源 */
 gboolean cleanup_recording_async(gpointer user_data) {
     CustomData *data = (CustomData *)user_data;
 
-    g_autoptr(GstElement) recording_bin_temp = g_atomic_pointer_exchange(&data->recording_bin, NULL);
+    GstElement *recording_bin_temp = (GstElement *)g_atomic_pointer_exchange(&data->recording_bin, NULL);
 
     if (!recording_bin_temp) {
-        data->is_recording = FALSE;
-        data->is_stopping_recording = FALSE;
+        g_atomic_int_set(&data->is_recording, FALSE);
+        g_atomic_int_set(&data->is_stopping_recording, FALSE);
         return G_SOURCE_REMOVE; 
     }
+
 #ifdef DEBUG
     g_print("Executing asynchronous recording cleanup...\n");
 #endif
-    // --- 1. 将整个 Bin 状态设置为 GST_STATE_NULL ---
+
+    // 1. 将整个 Bin 状态设为 NULL 并从父管道安全解绑
     gst_element_set_state(recording_bin_temp, GST_STATE_NULL);
 
     if (data->pipeline) {
-         g_autoptr(GstObject) parent = gst_object_get_parent(GST_OBJECT(recording_bin_temp));
-         if (parent == GST_OBJECT(data->pipeline)) {
-             gst_bin_remove(GST_BIN(data->pipeline), g_steal_pointer(&recording_bin_temp));
-         }
+        g_autoptr(GstObject) parent = gst_object_get_parent(GST_OBJECT(recording_bin_temp));
+        if (parent == GST_OBJECT(data->pipeline)) {
+            gst_bin_remove(GST_BIN(data->pipeline), recording_bin_temp);
+        } else {
+            gst_object_unref(recording_bin_temp);
+        }
+    } else {
+        gst_object_unref(recording_bin_temp);
     }
 
     // --- 2. 清理其他标志和字符串 ---
@@ -37,8 +44,8 @@ gboolean cleanup_recording_async(gpointer user_data) {
         data->recording_filename = NULL;
     }
 
-    data->is_recording = FALSE;
-    data->is_stopping_recording = FALSE;
+    g_atomic_int_set(&data->is_recording, FALSE);
+    g_atomic_int_set(&data->is_stopping_recording, FALSE);
 #ifdef DEBUG
     g_print("Async recording cleanup complete. Recording stopped.\n");
 #endif
@@ -46,12 +53,46 @@ gboolean cleanup_recording_async(gpointer user_data) {
         gtk_widget_destroy(data->dialog);
         data->dialog = NULL;
     }
-    return G_SOURCE_REMOVE; 
+    return G_SOURCE_REMOVE;
 }
 
-// 辅助函数：停止录制并清理分支 (新实现)
+// 探针回调函数：在数据流被安全阻塞时执行 EOS 发送与 Pad 断开操作
+static GstPadProbeReturn unlink_cb(GstPad *pad, GstPadProbeInfo *info, gpointer user_data) {
+    (void)info;
+    CustomData *data = (CustomData *)user_data;
+
+    // 获取当前阻塞的 Pad 连接的下游对端 Pad (即 recording_bin 的输入端)
+    g_autoptr(GstPad) peer = gst_pad_get_peer(pad);
+
+    if (peer) {
+        // 1. 向录制分支安全发送 EOS 事件，让复用器(Muxer)正常闭合文件尾部
+        gst_pad_send_event(peer, gst_event_new_eos());
+        // 2. 断开 Tee 与录制分支的连接
+        gst_pad_unlink(pad, peer);
+    }
+
+    // 3. 释放 Tee 上的 Request Pad
+    if (data->video_tee && pad == data->video_tee_q_pad) {
+        gst_element_release_request_pad(data->video_tee, pad);
+        data->video_tee_q_pad = NULL;
+#ifdef DEBUG
+        g_print("Video tee pad safely unlinked and released.\n");
+#endif
+    } else if (data->audio_tee && pad == data->audio_tee_q_pad) {
+        gst_element_release_request_pad(data->audio_tee, pad);
+        data->audio_tee_q_pad = NULL;
+#ifdef DEBUG
+        g_print("Audio tee pad safely unlinked and released.\n");
+#endif
+    }
+
+    // 4. 移除探针，允许主分支的数据流继续正常流动
+    return GST_PAD_PROBE_REMOVE;
+}
+
+// 停止录制处理逻辑
 gboolean stop_recording(CustomData *data) {
-    if (!data->is_recording || !data->pipeline || !data->recording_bin) {
+    if (!g_atomic_int_get(&data->is_recording) || !data->pipeline || !data->recording_bin) {
 #ifdef DEBUG
         g_print("Recording is not active or missing essential elements.\n");
 #endif
@@ -59,34 +100,33 @@ gboolean stop_recording(CustomData *data) {
     }
 
     g_print("Stopping recording...\n");
-    data->is_stopping_recording = TRUE;
+    g_atomic_int_set(&data->is_stopping_recording, TRUE);
 
-    g_autoptr(GstPad) v_bin_sink_pad = gst_element_get_static_pad(data->recording_bin, "videosink");
-    g_autoptr(GstPad) a_bin_sink_pad = gst_element_get_static_pad(data->recording_bin, "audiosink");
-    
-    if (v_bin_sink_pad) {
-        gst_pad_send_event(v_bin_sink_pad, gst_event_new_eos());
-    }
-    if (a_bin_sink_pad) {
-        gst_pad_send_event(a_bin_sink_pad, gst_event_new_eos());
-    }
-    
-    if (data->video_tee_q_pad && data->video_tee) {
-        gst_element_release_request_pad(data->video_tee, data->video_tee_q_pad);
-        data->video_tee_q_pad = NULL;
+    // 为视频 Tee 的分支 Pad 添加向下游阻塞的探针
+    if (data->video_tee_q_pad) {
+        gst_pad_add_probe(data->video_tee_q_pad, 
+                          GST_PAD_PROBE_TYPE_BLOCK_DOWNSTREAM, 
+                          unlink_cb, 
+                          data, 
+                          NULL);
     }
 
-    if (data->audio_tee_q_pad && data->audio_tee) {
-        gst_element_release_request_pad(data->audio_tee, data->audio_tee_q_pad);
-        data->audio_tee_q_pad = NULL;
+    // 为音频 Tee 的分支 Pad 添加向下游阻塞的探针
+    if (data->audio_tee_q_pad) {
+        gst_pad_add_probe(data->audio_tee_q_pad, 
+                          GST_PAD_PROBE_TYPE_BLOCK_DOWNSTREAM, 
+                          unlink_cb, 
+                          data, 
+                          NULL);
     }
 
     return TRUE;
 }
 
-// 辅助函数：构建并链接录制分支
+// 启动录制构建与连接
 gboolean start_recording(CustomData *data) {
-    if (!data->video_tee || !data->audio_tee || !data->pipeline || data->is_recording || !data->config_dict) {
+    if (!data->video_tee || !data->audio_tee || !data->pipeline || 
+        g_atomic_int_get(&data->is_recording) || !data->config_dict) {
         g_printerr("Recording preconditions failed.\n");
         return FALSE;
     }
@@ -118,7 +158,7 @@ gboolean start_recording(CustomData *data) {
         video_parser_name = "h264parse";
     }
 
-    // --- 2. 创建并组装一个 GstBin 作为录制子管道 ---
+    // --- 2. 创建录制 Bin ---
     data->recording_bin = gst_bin_new("recording-bin");
     if (!data->recording_bin) {
         g_printerr("Failed to create recording bin.\n");
@@ -145,7 +185,7 @@ gboolean start_recording(CustomData *data) {
                      video_record_queue, video_encoder, video_parser, 
                      audio_record_queue, audio_encoder, muxer, filesink, NULL);
 
-    // --- 3. 配置元素 ---
+    // --- 3. 配置元素参数 ---
     configure_element_from_ini(video_record_queue, dict, "queue_record");
     configure_element_from_ini(audio_record_queue, dict, "queue_record");
     configure_element_from_ini(video_encoder, dict, video_encoder_name);
@@ -173,7 +213,7 @@ gboolean start_recording(CustomData *data) {
 
     // --- 4. 链接 Bin 内部的元素 ---
     if (!gst_element_link_many(video_record_queue, video_encoder, video_parser, muxer, NULL) ||
-        !gst_element_link_many(audio_record_queue, audio_encoder, muxer, filesink, NULL)) { // filesink 直接连到 muxer
+        !gst_element_link_many(audio_record_queue, audio_encoder, muxer, filesink, NULL)) {
         g_printerr("Failed to link recording elements inside the bin.\n");
         goto cleanup;
     }
@@ -229,7 +269,7 @@ gboolean start_recording(CustomData *data) {
         g_print("Recording pipeline linked successfully.\n");
 #endif
         g_print("Recording started.\n");
-        data->is_recording = TRUE;
+        g_atomic_int_set(&data->is_recording, TRUE);
         return TRUE;
     end_of_scope1:;
     }
@@ -238,13 +278,12 @@ cleanup:
     g_printerr("Failed to start recording. Cleaning up.\n");
 
     if (data->recording_bin) {
-         gst_element_set_state(data->recording_bin, GST_STATE_NULL);
-         gst_object_unref(data->recording_bin);
-         data->recording_bin = NULL;
+        gst_element_set_state(data->recording_bin, GST_STATE_NULL);
+        gst_object_unref(data->recording_bin);
+        data->recording_bin = NULL;
     }
 
     g_idle_add(cleanup_recording_async, data);
 
     return FALSE;
 }
-

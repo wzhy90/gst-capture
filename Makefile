@@ -5,8 +5,9 @@ TARGET_DEBUG = $(TARGET)_debug
 SRCS = main.c config.c recorder.c utils.c
 PKG_LIBS = $(shell pkg-config --libs gtk+-3.0 gstreamer-1.0) -liniparser
 PKG_CFLAGS = $(shell pkg-config --cflags gtk+-3.0 gstreamer-1.0) -I/usr/include/iniparser
-CFLAGS = $(PKG_CFLAGS) -O2
-CFLAGS_DEBUG = $(PKG_CFLAGS) -g -DDEBUG
+WARN_FLAGS = -Wall -Wextra -Wmissing-prototypes -Wstrict-prototypes
+CFLAGS = $(PKG_CFLAGS) -O2 $(WARN_FLAGS)
+CFLAGS_DEBUG = $(PKG_CFLAGS) -g $(WARN_FLAGS) -DDEBUG 
 LIBS = $(PKG_LIBS)
 
 .PHONY: all clean release debug

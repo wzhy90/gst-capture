@@ -33,8 +33,8 @@ typedef struct _CustomData {
   dictionary *config_dict;            /* 指向解析后的配置数据的指针 */
 
   gboolean has_tee;                   /* 标志是否存在 tee 元素 */
-  gboolean is_recording;              /* 录制状态标志 */
-  gboolean is_stopping_recording;     /* 正在停止/清理过程中的标志 */
+  volatile gint is_recording;              /* 录制状态标志 */
+  volatile gint is_stopping_recording;     /* 正在停止/清理过程中的标志 */
   gchar *recording_filename;          /* 录制文件名指针 */
   GtkWidget *record_icon;             /* 录制图标指针 */
 
